@@ -23,8 +23,10 @@ import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.SystemClock;
 
+import org.futo.inputmethod.latin.SwipeDecoderDictionaryKt;
 import org.futo.inputmethod.latin.common.Constants;
 import org.futo.inputmethod.latin.common.ResizableIntArray;
+import org.futo.inputmethod.latin.uix.DataStoreHelper;
 
 /**
  * This class holds drawing points to represent a gesture trail. The gesture trail may contain
@@ -38,6 +40,11 @@ final class GestureTrailDrawingPoints {
     public static final boolean DEBUG_SHOW_POINTS = false;
     public static final int POINT_TYPE_SAMPLED = 1;
     public static final int POINT_TYPE_INTERPOLATED = 2;
+
+    // Debug: keep the last gesture trail on screen, unfaded, until the next gesture starts
+    private static boolean keepTrail() {
+        return DataStoreHelper.getSetting(SwipeDecoderDictionaryKt.getKeepSwipeTrailSetting());
+    }
 
     private static final int DEFAULT_CAPACITY = GestureStrokeDrawingPoints.PREVIEW_CAPACITY;
 
@@ -106,7 +113,15 @@ final class GestureTrailDrawingPoints {
             xCoords[downIndex] = markAsDownEvent(xCoords[downIndex]);
             mCurrentTimeBase = downTime - eventTimes[downIndex];
             mCurrentStrokeId = strokeId;
+            if (keepTrail()) {
+                // Kept trails never age out, so drop the previous gesture here instead
+                mTrailStartIndex = downIndex;
+            }
         }
+    }
+
+    private static int ageOf(final boolean keep, final int sinceDown, final int eventTime) {
+        return keep ? 0 : sinceDown - eventTime;
     }
 
     /**
@@ -175,9 +190,10 @@ final class GestureTrailDrawingPoints {
         final int[] yCoords = mYCoordinates.getPrimitiveArray();
         final int[] pointTypes = mPointTypes.getPrimitiveArray();
         final int sinceDown = (int)(SystemClock.uptimeMillis() - mCurrentTimeBase);
+        final boolean keep = keepTrail();
         int startIndex;
         for (startIndex = mTrailStartIndex; startIndex < trailSize; startIndex++) {
-            final int elapsedTime = sinceDown - eventTimes[startIndex];
+            final int elapsedTime = ageOf(keep, sinceDown, eventTimes[startIndex]);
             // Skip too old trail points.
             if (elapsedTime < params.mTrailLingerDuration) {
                 break;
@@ -191,10 +207,10 @@ final class GestureTrailDrawingPoints {
             final RoundedLine roundedLine = mRoundedLine;
             int p1x = getXCoordValue(xCoords[startIndex]);
             int p1y = yCoords[startIndex];
-            final int lastTime = sinceDown - eventTimes[startIndex];
+            final int lastTime = ageOf(keep, sinceDown, eventTimes[startIndex]);
             float r1 = getWidth(lastTime, params) / 2.0f;
             for (int i = startIndex + 1; i < trailSize; i++) {
-                final int elapsedTime = sinceDown - eventTimes[i];
+                final int elapsedTime = ageOf(keep, sinceDown, eventTimes[i]);
                 final int p2x = getXCoordValue(xCoords[i]);
                 final int p2y = yCoords[i];
                 final float r2 = getWidth(elapsedTime, params) / 2.0f;

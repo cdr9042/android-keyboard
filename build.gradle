@@ -361,6 +361,10 @@ android {
             java.srcDirs = ['tests/src']
             manifest.srcFile 'tests/AndroidManifest.xml'
         }
+
+        test {
+            java.srcDirs = ['tests/unit']
+        }
     }
 
     lintOptions {
