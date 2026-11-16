@@ -1,6 +1,7 @@
 package org.futo.inputmethod.latin
 
 import java.text.Normalizer
+import kotlin.math.acos
 import kotlin.math.hypot
 
 /**
@@ -21,6 +22,12 @@ internal object VniSwipe {
 
     /** Speed is measured over the points this close in time, on both sides. */
     private const val SPEED_WINDOW_MS = 30
+
+    /**
+     * The finger rests on a key only when it stays slow this long. Measured: meant keys stay slow
+     * 90 ms or more, a turn that merely slows down for a moment about 35 ms.
+     */
+    const val REST_MS = 60
 
     private const val FULLWIDTH_ZERO = 0xFF10
 
@@ -60,12 +67,14 @@ internal object VniSwipe {
     /**
      * Splits a gesture into the tone keys it meant and the points the letter model should see.
      *
-     * A tone key counts only where the finger slows down on it, or where the gesture starts or
-     * ends on it. Keys merely swept over on the way (6 to 1 passes 5, 4, 3 and 2) are fast.
+     * A tone key counts only where the finger rests on it (stays slow for [REST_MS]), or where
+     * the gesture starts or ends on it. Keys merely swept over on the way (6 to 1 passes 5, 4, 3
+     * and 2) are fast.
      *
-     * Each trip to the tone row is cut from the last letter the finger slowed down on before it
-     * to the first one after it, so letters swept over on the way up and back down do not reach
-     * the model. With no such letter on a side, only the tone-row points are cut on that side.
+     * Each trip to the tone row is cut from the last letter the finger rested on before it to the
+     * first one after it, so letters swept over on the way up and back down, or between two tone
+     * keys, do not reach the model. With no such letter on a side, only the tone-row points are
+     * cut on that side.
      *
      * [digits] holds the tone digit under each point (0 = not on a tone key), [ts] the time in ms.
      */
@@ -74,14 +83,14 @@ internal object VniSwipe {
         val keep = BooleanArray(n) { digits[it] == 0 }
         if (n == 0) return ToneSplit(emptySet(), keep)
 
-        val slow = slowPoints(xs, ys, ts, n, keyWidth * SLOW_KEY_WIDTHS_PER_MS)
+        val rest = restingPoints(xs, ys, ts, n, keyWidth * SLOW_KEY_WIDTHS_PER_MS)
 
         val picked = mutableSetOf<Int>()
         if (digits[0] != 0) picked.add(digits[0])
         if (digits[n - 1] != 0) picked.add(digits[n - 1])
-        for (i in 0 until n) if (slow[i] && digits[i] != 0) picked.add(digits[i])
+        for (i in 0 until n) if (rest[i] && digits[i] != 0) picked.add(digits[i])
 
-        val restsOnLetter = { i: Int -> slow[i] && digits[i] == 0 }
+        val restsOnLetter = { i: Int -> rest[i] && digits[i] == 0 }
         var start = 0
         while (start < n) {
             if (digits[start] == 0) { start++; continue }
@@ -95,8 +104,8 @@ internal object VniSwipe {
         return ToneSplit(picked, keep)
     }
 
-    /** Whether the finger moves slower than [maxSpeed] px/ms around each point. */
-    private fun slowPoints(xs: IntArray, ys: IntArray, ts: IntArray, n: Int, maxSpeed: Float): BooleanArray {
+    /** Whether the finger rests at each point: slower than [maxSpeed] px/ms for [REST_MS]. */
+    private fun restingPoints(xs: IntArray, ys: IntArray, ts: IntArray, n: Int, maxSpeed: Float): BooleanArray {
         val slow = BooleanArray(n)
         var a = 0
         var b = 0
@@ -111,7 +120,147 @@ internal object VniSwipe {
             val dt = ts[hi] - ts[lo]
             slow[i] = if (dt > 0) dist / dt < maxSpeed else dist == 0f
         }
-        return slow
+
+        val rest = BooleanArray(n)
+        var first = 0
+        while (first < n) {
+            if (!slow[first]) { first++; continue }
+            var last = first
+            while (last + 1 < n && slow[last + 1]) last++
+            if (ts[last] - ts[first] >= REST_MS) for (i in first..last) rest[i] = true
+            first = last + 1
+        }
+        return rest
+    }
+
+    /** A key's hit box; [letter] is null for keys that are not letters (tone keys, digits, shift). */
+    class KeyBox(val letter: Char?, val left: Int, val top: Int, val right: Int, val bottom: Int)
+
+    /**
+     * A letter the gesture surely typed: where it starts, ends, rests ([REST_MS]) or turns sharply
+     * ([MIN_TURN_DEGREES]). [letters] holds every key the point may be on (it can sit on a border).
+     */
+    data class Anchor(val letters: Set<Char>, val isStart: Boolean = false, val isEnd: Boolean = false)
+
+    /** A sharp turn of the path at a letter is taken as meant. */
+    const val MIN_TURN_DEGREES = 60.0
+
+    /** Keys at most this much farther away (in key sizes) than the nearest one are also candidates. */
+    const val NEAR_MARGIN = 0.35f
+
+    /**
+     * The letters the point at ([x], [y]) may be meant for: the nearest key and any within
+     * [NEAR_MARGIN] of it. Null when one of them is not a letter: near the tone row the tone logic
+     * decides, near other keys nothing is sure.
+     */
+    fun nearLetters(x: Int, y: Int, keys: List<KeyBox>): Set<Char>? {
+        val dist = keys.map { k ->
+            val w = (k.right - k.left).toFloat()
+            val h = (k.bottom - k.top).toFloat()
+            hypot((x - (k.left + k.right) / 2f) / w, (y - (k.top + k.bottom) / 2f) / h)
+        }
+        val best = dist.minOrNull() ?: return null
+        val near = keys.filterIndexed { i, _ -> dist[i] <= best + NEAR_MARGIN }
+        if (near.any { it.letter == null }) return null
+        return near.map { it.letter!!.lowercaseChar() }.toSet()
+    }
+
+    /**
+     * The letters the gesture surely typed, in order (see [Anchor]). Keys merely swept over are
+     * left out. Neighbouring anchors that may be the same key are merged.
+     */
+    fun anchors(xs: IntArray, ys: IntArray, ts: IntArray, n: Int, keys: List<KeyBox>, keyWidth: Float): List<Anchor> {
+        if (n == 0) return emptyList()
+        val events = sortedSetOf(0, n - 1)
+
+        val rest = restingPoints(xs, ys, ts, n, keyWidth * SLOW_KEY_WIDTHS_PER_MS)
+        var first = 0
+        while (first < n) {
+            if (!rest[first]) { first++; continue }
+            var last = first
+            while (last + 1 < n && rest[last + 1]) last++
+            events.add((first + last) / 2)
+            first = last + 1
+        }
+        events.addAll(turnPoints(xs, ys, n, keyWidth / 3f))
+
+        val out = mutableListOf<Anchor>()
+        var canMerge = false
+        for (e in events) {
+            val letters = nearLetters(xs[e], ys[e], keys)
+            if (letters == null) { canMerge = false; continue }
+            val start = e == 0
+            val end = e == n - 1
+            val prev = out.lastOrNull()
+            val both = if (canMerge && prev != null) prev.letters intersect letters else emptySet()
+            if (prev != null && both.isNotEmpty()) {
+                out[out.lastIndex] = Anchor(both, prev.isStart || start, prev.isEnd || end)
+            } else {
+                out.add(Anchor(letters, start, end))
+            }
+            canMerge = true
+        }
+        return out
+    }
+
+    /**
+     * Points where the path turns by at least [MIN_TURN_DEGREES], one per turn (the sharpest).
+     * The path is first thinned to points at least [minStep] apart so jitter is not read as a turn.
+     */
+    private fun turnPoints(xs: IntArray, ys: IntArray, n: Int, minStep: Float): List<Int> {
+        val kept = mutableListOf(0)
+        for (i in 1 until n) {
+            val last = kept.last()
+            if (hypot((xs[i] - xs[last]).toFloat(), (ys[i] - ys[last]).toFloat()) >= minStep) kept.add(i)
+        }
+        // Compare directions over one and two thinned steps, so a rounded corner still counts
+        val angle = DoubleArray(kept.size) { j ->
+            (1..2).filter { w -> j - w >= 0 && j + w < kept.size }
+                .maxOfOrNull { w -> turnDegrees(xs, ys, kept[j - w], kept[j], kept[j + w]) } ?: 0.0
+        }
+        val out = mutableListOf<Int>()
+        var j = 0
+        while (j < kept.size) {
+            if (angle[j] < MIN_TURN_DEGREES) { j++; continue }
+            var end = j
+            while (end + 1 < kept.size && angle[end + 1] >= MIN_TURN_DEGREES) end++
+            out.add(kept[(j..end).maxByOrNull { angle[it] }!!])
+            j = end + 1
+        }
+        return out
+    }
+
+    /** Angle between the direction a -> b and the direction b -> c, in degrees (0 = straight). */
+    private fun turnDegrees(xs: IntArray, ys: IntArray, a: Int, b: Int, c: Int): Double {
+        val ux = (xs[b] - xs[a]).toDouble()
+        val uy = (ys[b] - ys[a]).toDouble()
+        val vx = (xs[c] - xs[b]).toDouble()
+        val vy = (ys[c] - ys[b]).toDouble()
+        val lengths = hypot(ux, uy) * hypot(vx, vy)
+        if (lengths == 0.0) return 0.0
+        return Math.toDegrees(acos(((ux * vx + uy * vy) / lengths).coerceIn(-1.0, 1.0)))
+    }
+
+    /**
+     * Whether [word]'s base letters hold every anchor, in order: a start anchor on the first
+     * letter, an end anchor on the last one, the others in between.
+     */
+    fun fitsAnchors(word: String, anchors: List<Anchor>): Boolean {
+        if (anchors.isEmpty()) return true
+        val w = baseLetters(word).lowercase()
+        if (w.isEmpty()) return false
+        var next = 0
+        for (a in anchors) {
+            val at = when {
+                a.isStart -> 0
+                a.isEnd -> w.lastIndex
+                else -> (next until w.length).firstOrNull { w[it] in a.letters } ?: return false
+            }
+            if (at < next || w[at] !in a.letters) return false
+            if (a.isStart && a.isEnd && w.last() !in a.letters) return false
+            next = if (a.isEnd) w.length else at + 1
+        }
+        return true
     }
 
     /**

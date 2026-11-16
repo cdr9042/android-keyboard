@@ -115,6 +115,22 @@ class VniSwipeTest {
     }
 
     @Test
+    fun aBriefSlowdownOnALetterBetweenTwoToneKeysIsNotARest() {
+        // The thật swipe: rests on a, goes up to ^, dips into the letter row slowing a little
+        // while turning, rests on the dot below, and ends on t below it. The dip is not a letter.
+        val g = gesture(
+            Corner(100, 400, 150), Corner(550, 50, 150), Corner(500, 130, 50),
+            Corner(450, 50, 150), Corner(450, 150)
+        )
+        val s = split(g)
+        assertEquals(setOf(5, 6), s.picked)
+        for (i in s.keep.indices) {
+            if (g.xs[i] == 500 && g.ys[i] == 130) assertFalse("dip point $i", s.keep[i])
+        }
+        assertTrue(s.keep.last())
+    }
+
+    @Test
     fun withoutAPausedLetterOnlyTheToneRowIsCut() {
         // Never rests on a letter before going up, so the way up is kept; the tone row never is
         val g = gesture(Corner(550, 300), Corner(550, 50, 150), Corner(550, 400, 150))
@@ -124,6 +140,76 @@ class VniSwipeTest {
         for (i in keep.indices) {
             if (digits[i] != 0) assertFalse(keep[i])
         }
+    }
+
+    // Fake keyboard for anchors: tone row 1..9 at y 0..99, then "qwertyuiop" and "asdfghjkl",
+    // every key 100 x 100 starting at x = 0.
+    private val keyBoxes = (1..9).map { VniSwipe.KeyBox(null, (it - 1) * 100, 0, it * 100, 100) } +
+        "qwertyuiop".mapIndexed { i, c -> VniSwipe.KeyBox(c, i * 100, 100, i * 100 + 100, 200) } +
+        "asdfghjkl".mapIndexed { i, c -> VniSwipe.KeyBox(c, i * 100, 200, i * 100 + 100, 300) }
+
+    private fun anchors(vararg corners: Corner): List<VniSwipe.Anchor> {
+        val g = gesture(*corners)
+        return VniSwipe.anchors(g.xs, g.ys, g.ts, g.xs.size, keyBoxes, keyWidth = 100f)
+    }
+
+    private fun anchor(letters: String, start: Boolean = false, end: Boolean = false) =
+        VniSwipe.Anchor(letters.toSet(), start, end)
+
+    @Test
+    fun anchorsAreTheStartRestsCornersAndEndButNotKeysSweptOver() {
+        // t, rest on h, rest on a (sweeping g f d s fast), back up to end on t
+        assertEquals(
+            listOf(anchor("t", start = true), anchor("h"), anchor("a"), anchor("t", end = true)),
+            anchors(Corner(450, 150, 100), Corner(550, 250, 100), Corner(50, 250, 100), Corner(450, 150))
+        )
+    }
+
+    @Test
+    fun aSharpCornerWithoutAPauseIsAnAnchor() {
+        // e, straight through r and t, turns sharply on y without stopping, down to end on h
+        assertEquals(
+            listOf(anchor("e", start = true), anchor("y"), anchor("h", end = true)),
+            anchors(Corner(250, 150, 100), Corner(550, 150), Corner(550, 250))
+        )
+    }
+
+    @Test
+    fun aPointOnTheBorderOfTwoKeysMayBeEither() {
+        assertEquals(setOf('g', 'h'), VniSwipe.nearLetters(500, 250, keyBoxes))
+        assertEquals(setOf('h'), VniSwipe.nearLetters(550, 250, keyBoxes))
+        assertEquals(null, VniSwipe.nearLetters(450, 110, keyBoxes)) // close to tone key 5
+    }
+
+    @Test
+    fun restsNextToTheToneRowAreLeftToTheToneLogic() {
+        // d, rest on t right below tone key 5, end on j: the rest near the tone row is no anchor
+        assertEquals(
+            listOf(anchor("d", start = true), anchor("j", end = true)),
+            anchors(Corner(250, 250, 100), Corner(450, 110, 150), Corner(650, 250))
+        )
+    }
+
+    @Test
+    fun wordsMustHoldTheAnchorsInOrderFromFirstToLastLetter() {
+        val that = listOf(anchor("t", start = true), anchor("h"), anchor("a"), anchor("t", end = true))
+        assertTrue(VniSwipe.fitsAnchors("thật", that))
+        assertTrue(VniSwipe.fitsAnchors("that", that))
+        assertFalse(VniSwipe.fitsAnchors("thay", that)) // does not end on t
+        assertFalse(VniSwipe.fitsAnchors("hát", that)) // does not start on t
+        assertFalse(VniSwipe.fitsAnchors("tát", that)) // no h
+
+        val thang = listOf(anchor("t", start = true), anchor("hj"), anchor("a"), anchor("n"), anchor("gf", end = true))
+        assertTrue(VniSwipe.fitsAnchors("thắng", thang))
+        assertFalse(VniSwipe.fitsAnchors("thành", thang))
+
+        val dang = listOf(anchor("d", start = true), anchor("a"), anchor("n"), anchor("gf", end = true))
+        assertTrue(VniSwipe.fitsAnchors("đắng", dang))
+        assertFalse(VniSwipe.fitsAnchors("doanh", dang))
+
+        assertTrue(VniSwipe.fitsAnchors("tốt", listOf(anchor("t", start = true, end = true))))
+        assertFalse(VniSwipe.fitsAnchors("to", listOf(anchor("t", start = true, end = true))))
+        assertTrue(VniSwipe.fitsAnchors("anything", emptyList()))
     }
 
     @Test
