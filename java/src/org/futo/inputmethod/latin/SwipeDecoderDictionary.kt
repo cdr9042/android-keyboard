@@ -600,26 +600,38 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
 
         // VNI: the model often has the right letters with the wrong marks, so each candidate's base
         // letters also get spelled with exactly the picked tones (men -> mến, thiết -> thiệt) when
-        // the dictionary knows that spelling. Then re-rank by the picked tones. The best scores are
-        // handed out in the new order so the reorder survives any later sort by score.
+        // the dictionary knows that spelling (with no tone picked: unmarked, tâm -> tam). Then
+        // re-rank by the picked tones. The best scores are handed out in the new order so the
+        // reorder survives any later sort by score.
         val candidates = results.map { VniCandidate(it.word, it.score.toFloat(), it.ctcScore.toFloat()) }
-        val variants = if(crossedTones.isEmpty()) emptyList() else candidates
+        val variants = if(toneKeys.isEmpty()) emptyList() else candidates
             .distinctBy { VniSwipe.baseLetters(it.word) }
             .flatMap { c ->
                 VniSwipe.markedVariants(c.word, crossedTones)
                     .filter(isValidWord)
                     .map { VniCandidate(it, c.score, c.pathScore) }
             }
+        // No candidate ends on the letter the swipe surely ended on (than, thân for a swipe ending
+        // on t): also try their base letters ending there (that -> thật), with the picked tones
+        val endAnchor = anchors.lastOrNull()?.takeIf { it.isEnd }
+        val offered = candidates + variants
+        val endFixed = if(endAnchor == null || offered.any { VniSwipe.fitsAnchors(it.word, anchors) }) emptyList()
+            else offered.distinctBy { VniSwipe.baseLetters(it.word) }.flatMap { c ->
+                VniSwipe.endFixes(c.word, endAnchor.letters)
+                    .flatMap { VniSwipe.markedVariants(it, crossedTones) }
+                    .filter(isValidWord)
+                    .map { VniCandidate(it, c.score, c.pathScore) }
+            }
         // Drop the candidates missing a letter that was surely typed, unless none has them all
-        val all = (candidates + variants).distinctBy { it.word }
+        val all = (offered + endFixed).distinctBy { it.word }
             .let { list -> list.filter { VniSwipe.fitsAnchors(it.word, anchors) }.ifEmpty { list } }
-        val ranked = VniSwipe.rerank(all, crossedTones, { it.pathScore }) { it.word }
+        val ranked = if(toneKeys.isEmpty()) all else VniSwipe.rerank(all, crossedTones, { it.pathScore }) { it.word }
         val scores = all.map { it.score }.sortedDescending()
 
         if(toneKeys.isNotEmpty() && (BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil)) {
             Log.d("SwipeDecoderDictionary", "VNI toneKeys=${toneKeys.size} crossedTones=${crossedTones.sorted()} " +
                     "anchors=${anchors.joinToString("") { a -> a.letters.sorted().joinToString("", "[", "]") }} " +
-                    "model=${results.joinToString { it.word }} added=${variants.joinToString { it.word }} " +
+                    "model=${results.joinToString { it.word }} added=${(variants + endFixed).joinToString { it.word }} " +
                     "ranked=${ranked.joinToString { it.word }}")
         }
 
