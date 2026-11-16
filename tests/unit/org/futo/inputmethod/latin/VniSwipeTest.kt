@@ -37,45 +37,93 @@ class VniSwipeTest {
     // Everything below it is letters.
     private val toneAt = { x: Int, y: Int -> if (y in 0 until 100 && x in 0 until 900) x / 100 + 1 else 0 }
 
-    /** Straight lines between [corners], sampled every 10 px like a real gesture. */
-    private fun picked(vararg corners: Pair<Int, Int>): Set<Int> {
-        val xs = mutableListOf(corners[0].first)
-        val ys = mutableListOf(corners[0].second)
-        for (k in 1 until corners.size) {
-            val (x0, y0) = corners[k - 1]
-            val (x1, y1) = corners[k]
-            val steps = maxOf(abs(x1 - x0), abs(y1 - y0)) / 10
-            for (s in 1..steps) {
-                xs.add(x0 + (x1 - x0) * s / steps)
-                ys.add(y0 + (y1 - y0) * s / steps)
-            }
+    /** A corner of a fake gesture; the finger rests [pauseMs] there before moving on. */
+    private data class Corner(val x: Int, val y: Int, val pauseMs: Int = 0)
+
+    private class Gesture(val xs: IntArray, val ys: IntArray, val ts: IntArray)
+
+    /** Straight lines between [corners] at a fast swipe speed (2 px/ms), points every 5 ms. */
+    private fun gesture(vararg corners: Corner): Gesture {
+        val xs = mutableListOf<Int>()
+        val ys = mutableListOf<Int>()
+        val ts = mutableListOf<Int>()
+        var t = 0
+        fun add(x: Int, y: Int) { xs.add(x); ys.add(y); ts.add(t) }
+        fun rest(c: Corner) {
+            for (k in 1..c.pauseMs / 10) { t += 10; add(c.x, c.y) }
         }
-        val x = xs.toIntArray()
-        val y = ys.toIntArray()
-        return VniSwipe.pickedTones(x, y, VniSwipe.toneDigitsAt(x, y, x.size, toneAt), minStep = 30f)
+        add(corners[0].x, corners[0].y)
+        rest(corners[0])
+        for (k in 1 until corners.size) {
+            val a = corners[k - 1]
+            val b = corners[k]
+            val steps = maxOf(abs(b.x - a.x), abs(b.y - a.y)) / 10
+            for (s in 1..steps) {
+                t += 5
+                add(a.x + (b.x - a.x) * s / steps, a.y + (b.y - a.y) * s / steps)
+            }
+            rest(b)
+        }
+        return Gesture(xs.toIntArray(), ys.toIntArray(), ts.toIntArray())
     }
 
+    private fun split(g: Gesture): VniSwipe.ToneSplit =
+        VniSwipe.splitTones(g.xs, g.ys, g.ts, VniSwipe.toneDigitsAt(g.xs, g.ys, g.xs.size, toneAt), keyWidth = 100f)
+
+    private fun picked(vararg corners: Corner): Set<Int> = split(gesture(*corners)).picked
+
     @Test
-    fun turnsPickTonesAndKeysSweptOverAreIgnored() {
+    fun pausesPickTonesAndKeysSweptOverAreIgnored() {
         // Up to 6, along the row to 1, down to the letters: 2..5 are only swept over
-        assertEquals(setOf(1, 6), picked(550 to 400, 550 to 50, 50 to 50, 50 to 400))
+        assertEquals(
+            setOf(1, 6),
+            picked(Corner(550, 400), Corner(550, 50, 150), Corner(50, 50, 150), Corner(50, 400))
+        )
     }
 
     @Test
-    fun goingUpAndBackDownPicksThatTone() {
-        assertEquals(setOf(6), picked(550 to 400, 550 to 30, 550 to 400))
+    fun leavingAPausedToneKeyAcrossItsNeighbourIgnoresTheNeighbour() {
+        // The thắng swipe: rests on 1, then leaves down-right across the corner of 2
+        assertEquals(setOf(1), picked(Corner(50, 400, 150), Corner(50, 50, 200), Corner(450, 300, 150)))
     }
 
     @Test
     fun startingOrEndingOnAToneKeyPicksIt() {
-        assertEquals(setOf(3), picked(250 to 50, 250 to 400))
-        assertEquals(setOf(8), picked(250 to 400, 750 to 50))
+        assertEquals(setOf(3), picked(Corner(250, 50), Corner(250, 400)))
+        assertEquals(setOf(8), picked(Corner(250, 400), Corner(750, 50)))
     }
 
     @Test
     fun noToneRowNoTones() {
-        assertEquals(setOf<Int>(), picked(100 to 400, 800 to 300))
-        assertEquals(setOf<Int>(), VniSwipe.pickedTones(IntArray(0), IntArray(0), IntArray(0), 30f))
+        assertEquals(setOf<Int>(), picked(Corner(100, 400, 100), Corner(800, 300, 100)))
+        val empty = VniSwipe.splitTones(IntArray(0), IntArray(0), IntArray(0), IntArray(0), 100f)
+        assertEquals(setOf<Int>(), empty.picked)
+        assertEquals(0, empty.keep.size)
+    }
+
+    @Test
+    fun theWayUpToTheToneRowAndBackIsCutBetweenPausedLetters() {
+        // Letters at y = 400; rests on a letter, goes up to 6, comes back down to rest on another letter.
+        // Only the letter row may remain: everything between the two rests is dropped.
+        val g = gesture(Corner(100, 400, 100), Corner(550, 400, 150), Corner(550, 50, 150), Corner(800, 400, 150))
+        val keep = split(g).keep
+        assertTrue(keep.first() && keep.last())
+        for (i in keep.indices) {
+            if (keep[i]) assertEquals("kept point $i", 400, g.ys[i])
+        }
+        assertTrue(keep.count { it } < keep.size)
+    }
+
+    @Test
+    fun withoutAPausedLetterOnlyTheToneRowIsCut() {
+        // Never rests on a letter before going up, so the way up is kept; the tone row never is
+        val g = gesture(Corner(550, 300), Corner(550, 50, 150), Corner(550, 400, 150))
+        val keep = split(g).keep
+        val digits = VniSwipe.toneDigitsAt(g.xs, g.ys, g.xs.size, toneAt)
+        assertTrue(keep.first())
+        for (i in keep.indices) {
+            if (digits[i] != 0) assertFalse(keep[i])
+        }
     }
 
     @Test

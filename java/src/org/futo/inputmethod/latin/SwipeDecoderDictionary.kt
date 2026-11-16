@@ -264,14 +264,13 @@ private fun logVniGesture(kb: Keyboard, segments: List<InputPointers.GestureSegm
     }
 }
 
-/**
- * Removes the points that lie on VNI tone keys from [segments], and returns the tone digits the
- * gesture picked by turning on them (see [VniSwipe.pickedTones]). The tone digits are computed
- * from the unfiltered points.
- */
 /** A swipe candidate; [pathScore] is how well the swipe matches its letters (the model's CTC score). */
 private class VniCandidate(val word: String, val score: Float, val pathScore: Float)
 
+/**
+ * Cuts the trips to the VNI tone row out of [segments], and returns the tone digits the gesture
+ * picked by slowing down on them (see [VniSwipe.splitTones]).
+ */
 private fun stripTonePoints(
     segments: List<InputPointers.GestureSegment>,
     toneKeys: List<Key>
@@ -279,24 +278,23 @@ private fun stripTonePoints(
     val toneAt = { x: Int, y: Int ->
         toneKeys.firstOrNull { it.isOnKey(x, y) }?.let { VniSwipe.toneDigit(it.swipeCode) } ?: 0
     }
-
-    // Thin the path to a third of a key so finger jitter is not read as a turn
-    val minStep = toneKeys.first().width / 3f
+    val keyWidth = toneKeys.first().width.toFloat()
 
     val crossed = mutableSetOf<Int>()
     val stripped = segments.map { seg ->
         val n = seg.x.length
         val xs = seg.x.primitiveArray
         val ys = seg.y.primitiveArray
-        val digits = VniSwipe.toneDigitsAt(xs, ys, n, toneAt)
-        crossed.addAll(VniSwipe.pickedTones(xs, ys, digits, minStep))
+        val ts = seg.t.primitiveArray
+        val split = VniSwipe.splitTones(xs, ys, ts, VniSwipe.toneDigitsAt(xs, ys, n, toneAt), keyWidth)
+        crossed.addAll(split.picked)
 
         InputPointers.GestureSegment(seg.pointerId).also { kept ->
             for (i in 0 until n) {
-                if (digits[i] != 0) continue
+                if (!split.keep[i]) continue
                 kept.x.add(xs[i])
                 kept.y.add(ys[i])
-                kept.t.add(seg.t.get(i))
+                kept.t.add(ts[i])
             }
         }
     }.filter { it.x.length > 0 }

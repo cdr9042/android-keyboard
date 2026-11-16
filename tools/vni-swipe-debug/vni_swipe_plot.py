@@ -2,12 +2,15 @@
 
 Usage: python3 -I vni_swipe_plot.py <logfile> <out.svg>
 Uses the last 'VNIDUMP keys' line and the 'VNIDUMP path' lines after it.
-Mirrors VniSwipe.pickedTones so the picked tones / turn points can be seen.
+Mirrors VniSwipe.splitTones: tones are picked where the finger slows down on them, and each trip
+to the tone row is cut between the letters the finger slowed down on. Points sent to the model are
+blue, cut points grey, slow points on tone keys circled red.
 """
 import math
 import sys
 
-MIN_TURN = 60.0
+SLOW_KEY_WIDTHS_PER_MS = 0.005
+SPEED_WINDOW_MS = 30
 
 
 def parse(lines):
@@ -34,43 +37,60 @@ def tone_digit(code):
     return code - 0xFF10 if 0xFF11 <= code <= 0xFF19 else 0
 
 
-def turn(p, a, b, c):
-    ux, uy = p[b][0] - p[a][0], p[b][1] - p[a][1]
-    vx, vy = p[c][0] - p[b][0], p[c][1] - p[b][1]
-    n = math.hypot(ux, uy) * math.hypot(vx, vy)
-    if n == 0:
-        return 0.0
-    return math.degrees(math.acos(max(-1.0, min(1.0, (ux * vx + uy * vy) / n))))
+def speeds(points):
+    """px/ms around each point, like VniSwipe.slowPoints."""
+    n, out, a, b = len(points), [], 0, 0
+    for i in range(n):
+        t = points[i][2]
+        while t - points[a][2] > SPEED_WINDOW_MS:
+            a += 1
+        b = max(b, i)
+        while b + 1 < n and points[b + 1][2] - t <= SPEED_WINDOW_MS:
+            b += 1
+        lo, hi = min(a, max(i - 1, 0)), max(b, min(i + 1, n - 1))
+        dist = math.hypot(points[hi][0] - points[lo][0], points[hi][1] - points[lo][1])
+        dt = points[hi][2] - points[lo][2]
+        out.append(dist / dt if dt > 0 else (0.0 if dist == 0 else math.inf))
+    return out
 
 
-def picked(points, digits, min_step):
-    out, turns = set(), []
-    if not points:
-        return out, turns, []
-    for i in (0, len(points) - 1):
-        if digits[i]:
-            out.add(digits[i])
-    kept = [0]
-    for i in range(1, len(points)):
-        j = kept[-1]
-        if math.hypot(points[i][0] - points[j][0], points[i][1] - points[j][1]) >= min_step:
-            kept.append(i)
-    for j, idx in enumerate(kept):
-        if not digits[idx]:
+def split(points, digits, key_width):
+    """(picked tones, keep flags, slow flags), like VniSwipe.splitTones."""
+    n = len(points)
+    keep = [d == 0 for d in digits]
+    if not n:
+        return set(), keep, []
+    slow = [v < key_width * SLOW_KEY_WIDTHS_PER_MS for v in speeds(points)]
+    out = {digits[i] for i in (0, n - 1) if digits[i]}
+    out |= {digits[i] for i in range(n) if slow[i] and digits[i]}
+    rests = [slow[i] and not digits[i] for i in range(n)]
+    start = 0
+    while start < n:
+        if not digits[start]:
+            start += 1
             continue
-        best = max((turn(points, kept[j - w], idx, kept[j + w])
-                    for w in (1, 2) if j - w >= 0 and j + w < len(kept)), default=0.0)
-        turns.append((idx, digits[idx], best))
-        if best >= MIN_TURN:
-            out.add(digits[idx])
-    return out, turns, kept
+        end = start
+        while end + 1 < n and digits[end + 1]:
+            end += 1
+        frm = next((i for i in range(start - 1, -1, -1) if rests[i]), start - 1)
+        to = next((i for i in range(end + 1, n) if rests[i]), end + 1)
+        for i in range(frm + 1, to):
+            keep[i] = False
+        start = end + 1
+    return out, keep, slow
 
 
 def main(log_path, svg_path):
     with open(log_path, encoding="utf-8", errors="replace") as f:
         w, h, keys, segs = parse(f.read().splitlines())
     tone_keys = [k for k in keys if tone_digit(k[0])]
-    min_step = (tone_keys[0][3] - tone_keys[0][1]) / 3 if tone_keys else 30
+    key_width = (tone_keys[0][3] - tone_keys[0][1]) if tone_keys else 100
+
+    def key_at(x, y):
+        for code, l, t, r, b in keys:
+            if l <= x < r and t <= y < b:
+                return str(tone_digit(code)) if tone_digit(code) else chr(code)
+        return "?"
 
     def digit_at(x, y):
         for code, l, t, r, b in tone_keys:
@@ -90,28 +110,28 @@ def main(log_path, svg_path):
 
     report = []
     for pid, pts in segs.items():
+        pts.sort(key=lambda p: p[2])
         digits = [digit_at(x, y) for x, y, _ in pts]
-        tones, turns, kept = picked(pts, digits, min_step)
+        tones, keep, slow = split(pts, digits, key_width)
         line = " ".join(f"{x},{y}" for x, y, _ in pts)
-        svg.append(f'<polyline points="{line}" fill="none" stroke="#1e88e5" stroke-width="6" opacity="0.7"/>')
-        for x, y, _ in [pts[i] for i in kept]:
-            svg.append(f'<circle cx="{x}" cy="{y}" r="5" fill="#1e88e5"/>')
+        svg.append(f'<polyline points="{line}" fill="none" stroke="#b0bec5" stroke-width="6" opacity="0.7"/>')
+        for (x, y, _), k in zip(pts, keep):
+            svg.append(f'<circle cx="{x}" cy="{y}" r="5" fill="{"#1e88e5" if k else "#90a4ae"}"/>')
         svg.append(f'<circle cx="{pts[0][0]}" cy="{pts[0][1]}" r="14" fill="#43a047"/>')
         svg.append(f'<circle cx="{pts[-1][0]}" cy="{pts[-1][1]}" r="14" fill="#212121"/>')
-        for idx, d, ang in turns:
-            if ang < MIN_TURN:
-                continue
-            x, y, _ = pts[idx]
-            svg.append(f'<circle cx="{x}" cy="{y}" r="22" fill="none" stroke="#e53935" stroke-width="5"/>')
+        for (x, y, _), d, s_ in zip(pts, digits, slow):
+            if d and s_:
+                svg.append(f'<circle cx="{x}" cy="{y}" r="22" fill="none" stroke="#e53935" stroke-width="5"/>')
         swept = sorted({d for d in digits if d})
-        max_turn = {}
-        for _, d, ang in turns:
-            max_turn[d] = max(max_turn.get(d, 0.0), ang)
-        report.append(f"pointer {pid}: {len(pts)} points, swept tone keys {swept}, picked {sorted(tones)}, "
-                      f"max turn per tone key (threshold {MIN_TURN:.0f}): "
-                      + ", ".join(f"{d}={a:.0f}" for d, a in sorted(max_turn.items())))
-        on_tone = [(x, y) for (x, y, _), d in zip(pts, digits) if d]
-        report.append(f"pointer {pid}: start {pts[0][:2]} end {pts[-1][:2]}, points on tone row {len(on_tone)}")
+        model_keys = []
+        for (x, y, _), k in zip(pts, keep):
+            name = key_at(x, y)
+            if k and (not model_keys or model_keys[-1] != name):
+                model_keys.append(name)
+        report.append(f"pointer {pid}: {len(pts)} points, swept tone keys {swept}, picked {sorted(tones)}")
+        report.append(f"pointer {pid}: model sees keys {''.join(model_keys)} "
+                      f"({sum(keep)}/{len(pts)} points kept), slow threshold "
+                      f"{key_width * SLOW_KEY_WIDTHS_PER_MS:.2f} px/ms")
     svg.append("</svg>")
     with open(svg_path, "w", encoding="utf-8") as f:
         f.write("\n".join(svg))

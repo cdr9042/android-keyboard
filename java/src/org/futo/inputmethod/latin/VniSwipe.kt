@@ -1,21 +1,26 @@
 package org.futo.inputmethod.latin
 
 import java.text.Normalizer
-import kotlin.math.acos
 import kotlin.math.hypot
 
 /**
  * Helpers that let swipe typing understand the VNI tone keys.
  *
  * The VNI layout types tones/diacritics with fullwidth digits U+FF11..U+FF19 (see VNICombiner).
- * The swipe model only knows letters, so tone-key points are removed from the path and the
- * tone keys the user crossed are used to re-rank the model's candidates instead.
+ * The swipe model only knows letters, so the trips to the tone row are cut from the path and the
+ * tone keys the user picked are used to re-rank the model's candidates instead.
  *
  * Kept free of Android types so it can be unit tested on the JVM.
  */
 internal object VniSwipe {
-    /** A tone key is picked when the path turns at least this much on it. */
-    const val MIN_TURN_DEGREES = 60.0
+    /**
+     * A point is slow, i.e. the finger rests on a key it means, below this speed. Measured on a
+     * device: meant keys 0.0-0.33 px/ms, keys merely swept over 0.95-3.9 px/ms, keys 107 px wide.
+     */
+    const val SLOW_KEY_WIDTHS_PER_MS = 0.005f
+
+    /** Speed is measured over the points this close in time, on both sides. */
+    private const val SPEED_WINDOW_MS = 30
 
     private const val FULLWIDTH_ZERO = 0xFF10
 
@@ -47,51 +52,66 @@ internal object VniSwipe {
         IntArray(length) { toneAt(xs[it], ys[it]) }
 
     /**
-     * Tone digits the gesture deliberately picked: a tone key counts only where the path turns by
-     * at least [MIN_TURN_DEGREES] on it, or where the gesture starts or ends on it. Keys merely
-     * swept over on the way (6 to 1 passes 5, 4, 3 and 2) do not count.
-     *
-     * The path is first thinned to points at least [minStep] apart so jitter is not read as a
-     * turn. [digits] holds the tone digit under each point (0 = not on a tone key).
+     * [picked]: tone digits the gesture meant. [keep]: per point, whether it goes to the letter
+     * model.
      */
-    fun pickedTones(xs: IntArray, ys: IntArray, digits: IntArray, minStep: Float): Set<Int> {
+    class ToneSplit(val picked: Set<Int>, val keep: BooleanArray)
+
+    /**
+     * Splits a gesture into the tone keys it meant and the points the letter model should see.
+     *
+     * A tone key counts only where the finger slows down on it, or where the gesture starts or
+     * ends on it. Keys merely swept over on the way (6 to 1 passes 5, 4, 3 and 2) are fast.
+     *
+     * Each trip to the tone row is cut from the last letter the finger slowed down on before it
+     * to the first one after it, so letters swept over on the way up and back down do not reach
+     * the model. With no such letter on a side, only the tone-row points are cut on that side.
+     *
+     * [digits] holds the tone digit under each point (0 = not on a tone key), [ts] the time in ms.
+     */
+    fun splitTones(xs: IntArray, ys: IntArray, ts: IntArray, digits: IntArray, keyWidth: Float): ToneSplit {
         val n = digits.size
-        if (n == 0) return emptySet()
+        val keep = BooleanArray(n) { digits[it] == 0 }
+        if (n == 0) return ToneSplit(emptySet(), keep)
+
+        val slow = slowPoints(xs, ys, ts, n, keyWidth * SLOW_KEY_WIDTHS_PER_MS)
 
         val picked = mutableSetOf<Int>()
         if (digits[0] != 0) picked.add(digits[0])
         if (digits[n - 1] != 0) picked.add(digits[n - 1])
+        for (i in 0 until n) if (slow[i] && digits[i] != 0) picked.add(digits[i])
 
-        val kept = mutableListOf(0)
-        for (i in 1 until n) {
-            val last = kept.last()
-            if (hypot((xs[i] - xs[last]).toFloat(), (ys[i] - ys[last]).toFloat()) >= minStep) kept.add(i)
+        val restsOnLetter = { i: Int -> slow[i] && digits[i] == 0 }
+        var start = 0
+        while (start < n) {
+            if (digits[start] == 0) { start++; continue }
+            var end = start
+            while (end + 1 < n && digits[end + 1] != 0) end++
+            val from = (start - 1 downTo 0).firstOrNull(restsOnLetter) ?: (start - 1)
+            val to = (end + 1 until n).firstOrNull(restsOnLetter) ?: (end + 1)
+            for (i in from + 1 until to) keep[i] = false
+            start = end + 1
         }
-
-        // Compare directions over one and two thinned steps, so a rounded corner still counts
-        for (j in kept.indices) {
-            val digit = digits[kept[j]]
-            if (digit == 0) continue
-            for (w in 1..2) {
-                if (j - w < 0 || j + w >= kept.size) continue
-                if (turnDegrees(xs, ys, kept[j - w], kept[j], kept[j + w]) >= MIN_TURN_DEGREES) {
-                    picked.add(digit)
-                    break
-                }
-            }
-        }
-        return picked
+        return ToneSplit(picked, keep)
     }
 
-    /** Angle between the direction a -> b and the direction b -> c, in degrees (0 = straight). */
-    private fun turnDegrees(xs: IntArray, ys: IntArray, a: Int, b: Int, c: Int): Double {
-        val ux = (xs[b] - xs[a]).toDouble()
-        val uy = (ys[b] - ys[a]).toDouble()
-        val vx = (xs[c] - xs[b]).toDouble()
-        val vy = (ys[c] - ys[b]).toDouble()
-        val lengths = hypot(ux, uy) * hypot(vx, vy)
-        if (lengths == 0.0) return 0.0
-        return Math.toDegrees(acos(((ux * vx + uy * vy) / lengths).coerceIn(-1.0, 1.0)))
+    /** Whether the finger moves slower than [maxSpeed] px/ms around each point. */
+    private fun slowPoints(xs: IntArray, ys: IntArray, ts: IntArray, n: Int, maxSpeed: Float): BooleanArray {
+        val slow = BooleanArray(n)
+        var a = 0
+        var b = 0
+        for (i in 0 until n) {
+            while (ts[i] - ts[a] > SPEED_WINDOW_MS) a++
+            if (b < i) b = i
+            while (b + 1 < n && ts[b + 1] - ts[i] <= SPEED_WINDOW_MS) b++
+            // Always reach one neighbour on each side: a resting finger may send no events for a while
+            val lo = minOf(a, maxOf(i - 1, 0))
+            val hi = maxOf(b, minOf(i + 1, n - 1))
+            val dist = hypot((xs[hi] - xs[lo]).toFloat(), (ys[hi] - ys[lo]).toFloat())
+            val dt = ts[hi] - ts[lo]
+            slow[i] = if (dt > 0) dist / dt < maxSpeed else dist == 0f
+        }
+        return slow
     }
 
     /**
