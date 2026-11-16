@@ -1,5 +1,44 @@
 # FUTO Keyboard
 
+[-> Xem bản Tiếng Việt 🇻🇳 <-](README.vi.md)
+
+> This is an modified fork of [FUTO Keyboard](https://github.com/futo-org/android-keyboard). It improves Vietnamese VNI typing, see [Changes in this fork](#changes-in-this-fork). Report issues with these changes [here](https://github.com/cdr9042/android-keyboard/issues).
+
+## Changes in this fork
+
+### VNI (tone row) layout
+
+A new layout, "VNI (tone row)", next to the existing VNI layout, which is left unchanged ([layouts fork](https://github.com/cdr9042/futo-keyboard-layouts)). The tone keys still type the same VNI codes, but their labels show the mark they type:
+
+| Key | Mark | Example |
+|---|---|---|
+| 1 | acute (sắc) | a1 → á |
+| 2 | grave (huyền) | a2 → à |
+| 3 | hook above (hỏi) | a3 → ả |
+| 4 | tilde (ngã) | a4 → ã |
+| 5 | dot below (nặng) | a5 → ạ |
+| 6 | circumflex (mũ) | a6 → â, e6 → ê, o6 → ô |
+| 7 | horn (móc) | o7 → ơ, u7 → ư |
+| 8 | breve (trăng) | a8 → ă |
+| 9 | stroke (gạch) | d9 → đ |
+
+- Number row off (default): one row shows both the digit and the mark.
+- Number row on: the real number row types digits, and the tone row sits under it showing only the marks.
+
+### Tone-aware swipe typing
+
+The swipe model only knows letters. Before, a swipe across the tone row fed those points to the model as noise, and the tone keys crossed were ignored, so the most frequent spelling won (`viet` -> whatever word was most common). Now, when the layout has VNI tone keys:
+
+1. Picking tones. A tone key counts only where the finger rests on it: it stays slower than 0.005 key widths per ms for at least 60 ms, or the gesture starts or ends on it. Tone keys merely swept over (going from 6 to 1 passes 5, 4, 3 and 2) are fast and ignored.
+2. Cutting the path. Each trip to the tone row is cut out of the path the model sees, from the last letter the finger rested on before it to the first one after it. Letters swept over on the way up and back down do not reach the model.
+3. Letters surely typed. The gesture's start, end, rests (60 ms or more) and sharp turns (60 degrees or more) are letters the user clearly meant. A point on a key border may be either key. A candidate must hold all of them in order, with the start on its first letter and the end on its last. Candidates missing one are dropped, unless none has them all. This stops a short slowdown on a turn, or a key merely swept over, from changing the word (on a "thật" swipe the finger slowed for 34 ms on y between two tone keys; the model read t-h-a-y-t and offered "thay").
+4. Re-spelling. The model is asked for 16 candidates instead of 4. Each candidate's base letters are also spelled with exactly the picked marks (men -> mến, thiết -> thiệt), kept only when the dictionary knows that word.
+5. Re-ranking. Candidates whose marks were all picked come first, those using the most marks first, then by how well the swipe matches their letters. Then candidates without marks, then those using a mark that was not picked. The best scores are handed out in this order, so later sorting keeps it.
+
+### Editing the tone of a swiped word
+
+A word typed by swipe, or one the cursor comes back to, is loaded back into the VNI input as its VNI keys ("tháng" -> "tha1ng"). Tone keys pressed afterwards still add or change its marks.
+
 The goal is to make a good modern keyboard that stays offline and doesn't spy on you. This keyboard is a fork of [LatinIME, The Android Open-Source Keyboard](https://android.googlesource.com/platform/packages/inputmethods/LatinIME), with significant changes made to it.
 
 Check out the [FUTO Keyboard website](https://keyboard.futo.tech/) for downloads and more information.
