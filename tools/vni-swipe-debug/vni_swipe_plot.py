@@ -11,6 +11,7 @@ import sys
 
 SLOW_KEY_WIDTHS_PER_MS = 0.005
 SPEED_WINDOW_MS = 30
+REST_MS = 60
 
 
 def parse(lines):
@@ -61,6 +62,21 @@ def split(points, digits, key_width):
     if not n:
         return set(), keep, []
     slow = [v < key_width * SLOW_KEY_WIDTHS_PER_MS for v in speeds(points)]
+    # Resting: slow for at least REST_MS in a row, like VniSwipe.restingPoints
+    first = 0
+    rest = [False] * n
+    while first < n:
+        if not slow[first]:
+            first += 1
+            continue
+        last = first
+        while last + 1 < n and slow[last + 1]:
+            last += 1
+        if points[last][2] - points[first][2] >= REST_MS:
+            for i in range(first, last + 1):
+                rest[i] = True
+        first = last + 1
+    slow = rest
     out = {digits[i] for i in (0, n - 1) if digits[i]}
     out |= {digits[i] for i in range(n) if slow[i] and digits[i]}
     rests = [slow[i] and not digits[i] for i in range(n)]

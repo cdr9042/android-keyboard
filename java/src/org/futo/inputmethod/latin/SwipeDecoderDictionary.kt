@@ -477,6 +477,22 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
             if(toneKeys.isEmpty()) rawSegments to emptySet<Int>()
             else stripTonePoints(rawSegments, toneKeys)
 
+        // VNI: letters the gesture surely typed (start, end, rests, sharp turns). Candidates must
+        // hold them, so keys merely swept over cannot push out what was clearly swiped.
+        val anchors = if(toneKeys.isEmpty() || rawSegments.size != 1) emptyList() else {
+            val boxes = kb.sortedKeys.map {
+                VniSwipe.KeyBox(
+                    if(Character.isLetter(it.code)) it.code.toChar() else null,
+                    it.hitBox.left, it.hitBox.top, it.hitBox.right, it.hitBox.bottom
+                )
+            }
+            val seg = rawSegments.first()
+            VniSwipe.anchors(
+                seg.x.primitiveArray, seg.y.primitiveArray, seg.t.primitiveArray, seg.x.length,
+                boxes, toneKeys.first().width.toFloat()
+            )
+        }
+
         if(toneKeys.isNotEmpty() && useHighBeam && (BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil)) {
             logVniGesture(kb, rawSegments)
         }
@@ -530,7 +546,7 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         }
 
         // More candidates for VNI tones: their base letters are re-spelled with the picked tones
-        val topK = if(!useHighBeam) 1 else if(crossedTones.isNotEmpty()) 8 else 4
+        val topK = if(!useHighBeam) 1 else if(toneKeys.isNotEmpty()) 16 else 4
 
         val results = synchronized(BinaryDictionary.sTrieUsageLock) {
             if(appliedTries?.isEmpty() != false) {
@@ -594,12 +610,15 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
                     .filter(isValidWord)
                     .map { VniCandidate(it, c.score, c.pathScore) }
             }
+        // Drop the candidates missing a letter that was surely typed, unless none has them all
         val all = (candidates + variants).distinctBy { it.word }
+            .let { list -> list.filter { VniSwipe.fitsAnchors(it.word, anchors) }.ifEmpty { list } }
         val ranked = VniSwipe.rerank(all, crossedTones, { it.pathScore }) { it.word }
         val scores = all.map { it.score }.sortedDescending()
 
         if(toneKeys.isNotEmpty() && (BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil)) {
             Log.d("SwipeDecoderDictionary", "VNI toneKeys=${toneKeys.size} crossedTones=${crossedTones.sorted()} " +
+                    "anchors=${anchors.joinToString("") { a -> a.letters.sorted().joinToString("", "[", "]") }} " +
                     "model=${results.joinToString { it.word }} added=${variants.joinToString { it.word }} " +
                     "ranked=${ranked.joinToString { it.word }}")
         }
