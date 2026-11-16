@@ -88,6 +88,13 @@ class VniSwipeTest {
     }
 
     @Test
+    fun aSharpTurnOnAToneKeyPicksItWithoutAPause() {
+        // The thái swipe: up from a to 1 without stopping, turns there and heads down-right to i,
+        // sweeping over 2..4 on the way out
+        assertEquals(setOf(1), picked(Corner(50, 400, 150), Corner(50, 50), Corner(750, 300, 150)))
+    }
+
+    @Test
     fun startingOrEndingOnAToneKeyPicksIt() {
         assertEquals(setOf(3), picked(Corner(250, 50), Corner(250, 400)))
         assertEquals(setOf(8), picked(Corner(250, 400), Corner(750, 50)))
@@ -127,6 +134,23 @@ class VniSwipeTest {
         for (i in s.keep.indices) {
             if (g.xs[i] == 500 && g.ys[i] == 130) assertFalse("dip point $i", s.keep[i])
         }
+        assertTrue(s.keep.last())
+    }
+
+    @Test
+    fun theWayUpIsCutFromASharpTurnOnALetterWithoutAPause() {
+        // The thật swipe: from t turns sharply on a without stopping, up across letters to ^,
+        // dips, rests on the dot below and ends on t. Nothing between a and the end reaches the model.
+        val g = gesture(
+            Corner(400, 300, 150), Corner(50, 400), Corner(550, 50, 150), Corner(500, 130, 50),
+            Corner(450, 50, 150), Corner(450, 150)
+        )
+        val s = split(g)
+        assertEquals(setOf(5, 6), s.picked)
+        val atA = (g.xs.indices).first { g.xs[it] == 50 && g.ys[it] == 400 }
+        val lastTone = VniSwipe.toneDigitsAt(g.xs, g.ys, g.xs.size, toneAt).indexOfLast { it != 0 }
+        for (i in atA + 1..lastTone) assertFalse("point $i between a and the last tone key", s.keep[i])
+        assertTrue(s.keep[atA])
         assertTrue(s.keep.last())
     }
 
@@ -274,13 +298,43 @@ class VniSwipeTest {
         assertEquals(listOf<String>(), VniSwipe.markedVariants("ba", setOf(1, 2))) // two tones
         assertEquals(listOf<String>(), VniSwipe.markedVariants("ba", setOf(7))) // horn does not go on a
         assertEquals(listOf<String>(), VniSwipe.markedVariants("xyz", setOf(6)))
-        assertEquals(listOf<String>(), VniSwipe.markedVariants("men", emptySet()))
     }
 
     @Test
-    fun rerankLeavesListAloneWhenNothingCrossedOrNothingMatches() {
+    fun markedVariantsWithNoTonesGiveTheUnmarkedSpelling() {
+        assertEquals(listOf("tam"), VniSwipe.markedVariants("tâm", emptySet()))
+        assertEquals(listOf("nay"), VniSwipe.markedVariants("này", emptySet()))
+        assertEquals(listOf("di"), VniSwipe.markedVariants("đi", emptySet()))
+        assertEquals(listOf("men"), VniSwipe.markedVariants("men", emptySet()))
+    }
+
+    @Test
+    fun endFixesEndTheBaseLettersOnTheLetterTheSwipeEndedOn() {
+        assertEquals(listOf("that", "thant"), VniSwipe.endFixes("thân", setOf('t')))
+        assertEquals(listOf("that", "thaht"), VniSwipe.endFixes("thah", setOf('t')))
+        assertEquals(listOf("tht", "that"), VniSwipe.endFixes("tha", setOf('t')))
+        assertEquals(listOf<String>(), VniSwipe.endFixes("", setOf('t')))
+    }
+
+    @Test
+    fun theThatSwipeFindsThatWhenTheModelOnlyOffersThan() {
+        // The model offered than/thân, the swipe ended on t with ^ and the dot below picked
+        val found = VniSwipe.endFixes("thân", setOf('t')).flatMap { VniSwipe.markedVariants(it, setOf(5, 6)) }
+        assertTrue("thật" in found)
+    }
+
+    @Test
+    fun rerankPutsUnmarkedWordsFirstWhenNoToneWasCrossed() {
+        assertEquals(
+            listOf("tam", "nay", "tâm", "này"),
+            VniSwipe.rerank(listOf("tâm", "tam", "này", "nay"), emptySet()) { it }
+        )
+        assertEquals(listOf("di", "đi"), VniSwipe.rerank(listOf("đi", "di"), emptySet()) { it })
+    }
+
+    @Test
+    fun rerankLeavesListAloneWhenNoMarkedWordFitsTheCrossedTones() {
         val words = listOf("viet", "việt", "vết")
-        assertEquals(words, VniSwipe.rerank(words, emptySet()) { it })
         assertEquals(words, VniSwipe.rerank(words, setOf(9)) { it })
     }
 }

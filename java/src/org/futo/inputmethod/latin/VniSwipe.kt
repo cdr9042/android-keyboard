@@ -67,13 +67,14 @@ internal object VniSwipe {
     /**
      * Splits a gesture into the tone keys it meant and the points the letter model should see.
      *
-     * A tone key counts only where the finger rests on it (stays slow for [REST_MS]), or where
-     * the gesture starts or ends on it. Keys merely swept over on the way (6 to 1 passes 5, 4, 3
-     * and 2) are fast.
+     * A tone key counts only where the finger rests on it (stays slow for [REST_MS]), turns
+     * sharply on it ([MIN_TURN_DEGREES]), or where the gesture starts or ends on it. Keys merely
+     * swept over on the way (6 to 1 passes 5, 4, 3 and 2) are fast and straight.
      *
-     * Each trip to the tone row is cut from the last letter the finger rested on before it to the
-     * first one after it, so letters swept over on the way up and back down, or between two tone
-     * keys, do not reach the model. With no such letter on a side, only the tone-row points are
+     * Each trip to the tone row is cut from the last letter the finger rested or turned sharply on
+     * before it to the first one after it, so letters swept over on the way up and back down, or
+     * between two tone keys, do not reach the model. Turns within half a key of the tone row do not
+     * count: they are dips between two tone keys. With no such letter on a side, only the tone-row points are
      * cut on that side.
      *
      * [digits] holds the tone digit under each point (0 = not on a tone key), [ts] the time in ms.
@@ -89,15 +90,26 @@ internal object VniSwipe {
         if (digits[0] != 0) picked.add(digits[0])
         if (digits[n - 1] != 0) picked.add(digits[n - 1])
         for (i in 0 until n) if (rest[i] && digits[i] != 0) picked.add(digits[i])
+        // A sharp turn on a tone key is meant too, even without a pause (up to 1 and straight on)
+        val turns = turnPoints(xs, ys, n, keyWidth / 3f)
+        for (i in turns) if (digits[i] != 0) picked.add(digits[i])
 
-        val restsOnLetter = { i: Int -> rest[i] && digits[i] == 0 }
+        // So is a sharp turn on a letter (a in thật, then straight up to the tone row), unless it
+        // is right next to the tone row: that is a dip between two tone keys, not a letter.
+        val tonePoints = (0 until n).filter { digits[it] != 0 }
+        val turnsOnLetters = turns.filter { i ->
+            digits[i] == 0 && tonePoints.none { t ->
+                hypot((xs[i] - xs[t]).toFloat(), (ys[i] - ys[t]).toFloat()) < keyWidth / 2f
+            }
+        }.toSet()
+        val meantLetter = { i: Int -> digits[i] == 0 && (rest[i] || i in turnsOnLetters) }
         var start = 0
         while (start < n) {
             if (digits[start] == 0) { start++; continue }
             var end = start
             while (end + 1 < n && digits[end + 1] != 0) end++
-            val from = (start - 1 downTo 0).firstOrNull(restsOnLetter) ?: (start - 1)
-            val to = (end + 1 until n).firstOrNull(restsOnLetter) ?: (end + 1)
+            val from = (start - 1 downTo 0).firstOrNull(meantLetter) ?: (start - 1)
+            val to = (end + 1 until n).firstOrNull(meantLetter) ?: (end + 1)
             for (i in from + 1 until to) keep[i] = false
             start = end + 1
         }
@@ -273,7 +285,8 @@ internal object VniSwipe {
      *  3. candidates using a mark that was not crossed.
      * Fitting candidates using as many marks are ordered by [pathScoreOf], how well the swipe
      * matches their letters (higher is better). Otherwise each group keeps its relative order.
-     * Returns [candidates] unchanged when nothing was crossed or no candidate with marks fits.
+     * When nothing was crossed the user typed no marks, so candidates without marks come first
+     * (tam before tâm). Returns [candidates] unchanged when no candidate with marks fits.
      */
     fun <T> rerank(
         candidates: List<T>,
@@ -281,9 +294,11 @@ internal object VniSwipe {
         pathScoreOf: (T) -> Float = { 0f },
         wordOf: (T) -> String
     ): List<T> {
-        if (crossed.isEmpty()) return candidates
-
         val marks = candidates.map { markDigits(wordOf(it)) }
+        if (crossed.isEmpty()) {
+            return candidates.filterIndexed { i, _ -> marks[i].isEmpty() } +
+                    candidates.filterIndexed { i, _ -> marks[i].isNotEmpty() }
+        }
         val fitting = candidates.indices.filter { marks[it].isNotEmpty() && crossed.containsAll(marks[it]) }
         if (fitting.isEmpty()) return candidates
 
@@ -308,11 +323,11 @@ internal object VniSwipe {
 
     /**
      * Spellings of [word]'s base letters carrying exactly the marks in [tones], e.g. "men" or
-     * "mèn" with {1, 6} -> mến, "thiết" with {5, 6} -> thiệt. The model often offers the right
-     * letters with the wrong marks; the caller keeps the spellings the dictionary knows.
+     * "mèn" with {1, 6} -> mến, "thiết" with {5, 6} -> thiệt, "tâm" with no tones -> tam. The
+     * model often offers the right letters with the wrong marks; the caller keeps the spellings
+     * the dictionary knows.
      */
     fun markedVariants(word: String, tones: Set<Int>): List<String> {
-        if (tones.isEmpty()) return emptyList()
         val base = baseLetters(word)
 
         // Each letter's options as (spelling, uses a tone)
@@ -344,6 +359,18 @@ internal object VniSwipe {
         }
         build(0, "", false)
         return out
+    }
+
+    /**
+     * Spellings of [word]'s base letters that end on one of [last], the letters the swipe surely
+     * ended on: the last letter replaced (thân -> that) or one added (tha -> that). For when the
+     * model offers no word ending there; the caller marks them and keeps the ones the dictionary
+     * knows.
+     */
+    fun endFixes(word: String, last: Set<Char>): List<String> {
+        val base = baseLetters(word)
+        if (base.isEmpty()) return emptyList()
+        return last.flatMap { c -> listOf(base.dropLast(1) + c, base + c) }.distinct().filter { it != base }
     }
 
     private const val MAX_VARIANTS = 64
