@@ -14,7 +14,8 @@ class VNICombiner: Combiner {
         event: Event?
     ): Event {
         if (event == null) return Event.createNotHandledEvent()
-        if (event.eventType != Event.EVENT_TYPE_INPUT_KEYPRESS) return event
+        val resumed = event.eventType == Event.EVENT_TYPE_INPUT_KEYPRESS_RESUMED
+        if (event.eventType != Event.EVENT_TYPE_INPUT_KEYPRESS && !resumed) return event
 
         val keypress = event.mCodePoint.toChar()
 
@@ -31,6 +32,20 @@ class VNICombiner: Combiner {
         if (keypress.code in 0xFF10..0xFF19) {
             buffer.append((keypress.code - 0xFEE0).toChar())
             return Event.createConsumedEvent(event)
+        }
+
+        // A resumed word (a swiped word, or one the cursor came back to) goes into the buffer as its
+        // VNI keys ("tháng" -> "tha1ng"), so tone keys pressed afterwards still apply to it.
+        if (resumed) {
+            VNI.keysFor(keypress)?.let {
+                buffer.append(it)
+                return Event.createConsumedEvent(event)
+            }
+            // Not typed with VNI (a hyphen, an apostrophe): hand on what the buffer holds as text,
+            // followed by it, so the word keeps its order
+            val text = getCombiningStateFeedback().toString() + keypress
+            buffer.clear()
+            return Event.createSoftwareTextEvent(text, Event.NOT_A_KEY_CODE)
         }
 
         if (!(keypress in 'A'..'Z' || keypress in 'a'..'z')) {
