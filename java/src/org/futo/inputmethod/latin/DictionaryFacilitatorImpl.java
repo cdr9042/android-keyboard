@@ -953,6 +953,11 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
         return isValidWord(word, ALL_DICTIONARY_TYPES);
     }
 
+    @Override
+    public boolean isInUserDictionary(final String word) {
+        return isValidWord(word, new String[] { Dictionary.TYPE_USER });
+    }
+
     private boolean isValidWord(final String word, final String[] dictionariesToCheck) {
         if (TextUtils.isEmpty(word)) {
             return false;

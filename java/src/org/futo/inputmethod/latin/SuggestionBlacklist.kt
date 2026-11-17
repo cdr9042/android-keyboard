@@ -13,7 +13,13 @@ import org.futo.inputmethod.latin.uix.settings.BadWordMode
 import org.futo.inputmethod.latin.uix.settings.shouldBlockWord
 import java.util.Locale
 
-class SuggestionBlacklist(val settings: Settings, val context: Context, val lifecycleScope: LifecycleCoroutineScope) {
+class SuggestionBlacklist(
+    val settings: Settings,
+    val context: Context,
+    val lifecycleScope: LifecycleCoroutineScope,
+    // Words the user added to the personal dictionary are never blocked as offensive
+    val isInPersonalDictionary: (String) -> Boolean = { false }
+) {
     private var userBlacklistedWords: Set<String> = setOf()
 
     private val mode get() = BadWordMode(
@@ -49,7 +55,7 @@ class SuggestionBlacklist(val settings: Settings, val context: Context, val life
 
     fun isWordOk(word: String): Boolean {
         if(word in userBlacklistedWords) return false
-        if(shouldBlockWord(mode, word)) return false
+        if(shouldBlockWord(mode, word) && !isInPersonalDictionary(word)) return false
         return true
     }
 
