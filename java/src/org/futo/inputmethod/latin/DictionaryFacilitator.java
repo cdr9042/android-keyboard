@@ -179,6 +179,8 @@ public interface DictionaryFacilitator {
 
     boolean isValidSuggestionWord(final String word);
 
+    boolean isInUserDictionary(final String word);
+
     boolean clearUserHistoryDictionary(final Context context);
 
     void flushUserHistoryDictionaries();

@@ -6,9 +6,9 @@
 
 ## Changes in this fork
 
-### VNI (tone row) layout
+### VNI layout with a tone row
 
-A new layout, "VNI (tone row)", next to the existing VNI layout, which is left unchanged ([layouts fork](https://github.com/cdr9042/futo-keyboard-layouts)). The tone keys still type the same VNI codes, but their labels show the mark they type:
+A new layout, "VNI", is the default Vietnamese layout, listed first. The old VNI layout is kept, renamed "VNI (legacy)" ([layouts fork](https://github.com/cdr9042/futo-keyboard-layouts)). The tone keys still type the same VNI codes, but their labels show the mark they type:
 
 | Key | Mark | Example |
 |---|---|---|
