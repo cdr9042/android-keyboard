@@ -884,7 +884,8 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
             if(SwipeDecoderDictionary.canBeUsed()) {
                 final ArrayList<SuggestedWordInfo> dictionarySuggestions =
                         DictionaryFacilitatorImpl.swipeDecoderDictionary.getSuggestions(composedData, ngramContext,
-                            inputStyle == SuggestedWords.INPUT_STYLE_TAIL_BATCH, getTrieWeights());
+                            inputStyle == SuggestedWords.INPUT_STYLE_TAIL_BATCH, getTrieWeights(),
+                            this::isValidSuggestionWord);
 
                 if (dictionarySuggestions != null) {
                     suggestionResults.addAll(dictionarySuggestions);
