@@ -4,7 +4,7 @@
 
 ## Layout VNI (hàng dấu)
 
-Layout mới "VNI (tone row)", nằm cạnh layout VNI cũ (layout cũ giữ nguyên) ([fork layouts](https://github.com/cdr9042/futo-keyboard-layouts)). Phím dấu vẫn gửi đúng mã VNI như trước, nhưng nhãn hiện dấu mà nó gõ:
+Layout mới "VNI", là layout tiếng Việt mặc định và đứng đầu danh sách. Layout VNI cũ vẫn giữ, đổi tên thành "VNI (legacy)" ([fork layouts](https://github.com/cdr9042/futo-keyboard-layouts)). Phím dấu vẫn gửi đúng mã VNI như trước, nhưng nhãn hiện dấu mà nó gõ:
 
 | Phím | Dấu | Ví dụ |
 |---|---|---|
