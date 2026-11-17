@@ -506,35 +506,32 @@ fun RowScope.SuggestionItems(words: SuggestedWords, onClick: (i: Int) -> Unit, o
                 (layout.emojiMatches.isEmpty() && layout.presentableSuggestions.size <= 1) ->
             suggestionItem(layout.presentableSuggestions.firstOrNull())
 
+        // Like Gboard, the typed word goes first (left) unless it is the center word; tapping it
+        // adds it to the personal dictionary. The side slots are then filled by emoji and matches.
         layout.autocorrectMatch != null -> {
-            var supplementalSuggestionIndex = 0
-            if(layout.emojiMatches.isEmpty()) {
-                suggestionItem(layout.sortedMatches.getOrNull(supplementalSuggestionIndex++))
-            } else {
-                suggestionItem(layout.emojiMatches[0])
-            }
+            val verbatim = layout.verbatimWord?.takeIf { it.mWord != layout.autocorrectMatch.mWord }
+            val sides = listOfNotNull(verbatim, layout.emojiMatches.firstOrNull()) + layout.sortedMatches
+
+            suggestionItem(sides.getOrNull(0))
             SuggestionSeparator()
             suggestionItem(layout.autocorrectMatch)
             SuggestionSeparator()
-
-            if(layout.verbatimWord != null && layout.verbatimWord.mWord != layout.autocorrectMatch.mWord) {
-                suggestionItem(layout.verbatimWord)
-            } else {
-                suggestionItem(layout.sortedMatches.getOrNull(supplementalSuggestionIndex))
-            }
+            suggestionItem(sides.getOrNull(1))
         }
 
         else -> {
-            var supplementalSuggestionIndex = 1
-            if(layout.emojiMatches.isEmpty()) {
-                suggestionItem(layout.sortedMatches.getOrNull(supplementalSuggestionIndex++))
-            } else {
-                suggestionItem(layout.emojiMatches[0])
+            val center = layout.sortedMatches.getOrNull(0)
+            val verbatim = layout.verbatimWord?.takeIf {
+                words.mInputStyle != SuggestedWords.INPUT_STYLE_TAIL_BATCH
+                        && it.mWord.isNotEmpty() && it.mWord != center?.mWord
             }
+            val sides = listOfNotNull(verbatim, layout.emojiMatches.firstOrNull()) + layout.sortedMatches.drop(1)
+
+            suggestionItem(sides.getOrNull(0))
             SuggestionSeparator()
-            suggestionItem(layout.sortedMatches.getOrNull(0))
+            suggestionItem(center)
             SuggestionSeparator()
-            suggestionItem(layout.sortedMatches.getOrNull(supplementalSuggestionIndex))
+            suggestionItem(sides.getOrNull(1))
         }
     }
 }

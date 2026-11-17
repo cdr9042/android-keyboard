@@ -17,6 +17,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.futo.inputmethod.annotations.UsedForTesting
+import org.futo.inputmethod.compat.UserDictionaryCompatUtils
 import org.futo.inputmethod.engine.ExpandableSuggestionBarConfiguration
 import org.futo.inputmethod.engine.GlobalIMEMessage
 import org.futo.inputmethod.engine.IMEHelper
@@ -116,7 +117,8 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
     private val suggestionBlacklist = SuggestionBlacklist(
         settings,
         context,
-        helper.lifecycleScope
+        helper.lifecycleScope,
+        isInPersonalDictionary = { dictionaryFacilitator.isInUserDictionary(it) }
     )
 
     private val languageModelFacilitator = LanguageModelFacilitator(
@@ -129,6 +131,19 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         suggestionBlacklist = suggestionBlacklist,
         suggestedWordsCallback = this
     )
+
+    // Like Gboard: picking the typed word adds it to the personal dictionary when no dictionary
+    // knows it or when it is blocked as offensive, so it is suggested and swipeable from then on
+    private fun addTypedWordToPersonalDictionary(word: String) {
+        if(word.isBlank() || settings.current.mInputAttributes.mNoLearning) return
+        if(dictionaryFacilitator.isInUserDictionary(word)) return
+        if(dictionaryFacilitator.isValidSuggestionWord(word) && suggestionBlacklist.isWordOk(word)) return
+
+        val locale = settings.current.mLocale
+        helper.lifecycleScope.launch(Dispatchers.IO) {
+            UserDictionaryCompatUtils.addWord(context, word, FREQUENCY_FOR_PERSONAL_DICTIONARY_ADDS, null, locale)
+        }
+    }
 
     override fun addToHistory(
         word: String,
@@ -336,6 +351,9 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
             }
 
             Event.EVENT_TYPE_SUGGESTION_PICKED -> {
+                if(event.mSuggestedWordInfo!!.isKindOf(SuggestedWordInfo.KIND_TYPED)) {
+                    addTypedWordToPersonalDictionary(event.mSuggestedWordInfo.mWord)
+                }
                 inputLogic.onPickSuggestionManually(
                     settings.current,
                     event.mSuggestedWordInfo!!,
@@ -826,5 +844,8 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
     companion object {
         @OptIn(ExperimentalCoroutinesApi::class)
         val dictionaryScope = Dispatchers.Default.limitedParallelism(1)
+
+        // Same as words added from the personal dictionary settings
+        private const val FREQUENCY_FOR_PERSONAL_DICTIONARY_ADDS = 250
     }
 }
