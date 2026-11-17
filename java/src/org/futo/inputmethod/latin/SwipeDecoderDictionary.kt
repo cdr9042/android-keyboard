@@ -230,6 +230,9 @@ private class SpecialDecoder private constructor(
 }
 
 val LegacySwipeSetting = SettingsKey(booleanPreferencesKey("swipe_mode_legacy"), false)
+
+/** Debug: keep the last swipe trail on screen, unfaded, until the next swipe (for screenshots). */
+val KeepSwipeTrailSetting = SettingsKey(booleanPreferencesKey("swipe_debug_keep_trail"), false)
 val DisplayTop4Setting = SettingsKey(booleanPreferencesKey("swipe_use_top4_suggestions"), true)
 
 val SwipeSpecialDecoderSetting = SettingsKey(booleanPreferencesKey("__experimental_swipe_special_decoder"), true)
@@ -241,6 +244,63 @@ data class SwipePoiSer(
 )
 @Serializable
 data class SwipeSegSer(val data: List<SwipePoiSer>)
+
+/**
+ * Debug dump of a VNI gesture: every key's hit box and the raw gesture points, in the same
+ * keyboard pixel coordinates, so the swipe can be redrawn offline. Logcat truncates long lines,
+ * so the points are split into chunks.
+ */
+private fun logVniGesture(kb: Keyboard, segments: List<InputPointers.GestureSegment>) {
+    val tag = "SwipeDecoderDictionary"
+    val keys = kb.sortedKeys.joinToString(";") {
+        "${it.swipeCode},${it.hitBox.left},${it.hitBox.top},${it.hitBox.right},${it.hitBox.bottom}"
+    }
+    Log.d(tag, "VNIDUMP keys ${kb.mBaseWidth}x${kb.mBaseHeight} $keys")
+    segments.forEach { seg ->
+        (0 until seg.x.length).chunked(100).forEachIndexed { part, indices ->
+            val points = indices.joinToString(";") { "${seg.x.get(it)},${seg.y.get(it)},${seg.t.get(it)}" }
+            Log.d(tag, "VNIDUMP path ${seg.pointerId} $part $points")
+        }
+    }
+}
+
+/** A swipe candidate; [pathScore] is how well the swipe matches its letters (the model's CTC score). */
+private class VniCandidate(val word: String, val score: Float, val pathScore: Float)
+
+/**
+ * Cuts the trips to the VNI tone row out of [segments], and returns the tone digits the gesture
+ * picked by slowing down on them (see [VniSwipe.splitTones]).
+ */
+private fun stripTonePoints(
+    segments: List<InputPointers.GestureSegment>,
+    toneKeys: List<Key>
+): Pair<List<InputPointers.GestureSegment>, Set<Int>> {
+    val toneAt = { x: Int, y: Int ->
+        toneKeys.firstOrNull { it.isOnKey(x, y) }?.let { VniSwipe.toneDigit(it.swipeCode) } ?: 0
+    }
+    val keyWidth = toneKeys.first().width.toFloat()
+
+    val crossed = mutableSetOf<Int>()
+    val stripped = segments.map { seg ->
+        val n = seg.x.length
+        val xs = seg.x.primitiveArray
+        val ys = seg.y.primitiveArray
+        val ts = seg.t.primitiveArray
+        val split = VniSwipe.splitTones(xs, ys, ts, VniSwipe.toneDigitsAt(xs, ys, n, toneAt), keyWidth)
+        crossed.addAll(split.picked)
+
+        InputPointers.GestureSegment(seg.pointerId).also { kept ->
+            for (i in 0 until n) {
+                if (!split.keep[i]) continue
+                kept.x.add(xs[i])
+                kept.y.add(ys[i])
+                kept.t.add(ts[i])
+            }
+        }
+    }.filter { it.x.length > 0 }
+
+    return stripped to crossed
+}
 
 class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Dictionary("swipe", locale) {
     companion object {
@@ -388,7 +448,8 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         composedData: ComposedData,
         ngramContext: NgramContext?,
         useHighBeam: Boolean,
-        trieWeights: FloatArray
+        trieWeights: FloatArray,
+        isValidWord: (String) -> Boolean
     ): ArrayList<SuggestedWords.SuggestedWordInfo>? {
         if(context.getSetting(LegacySwipeSetting) == true) return null
 
@@ -401,17 +462,44 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
 
         if(!composedData.mIsBatchMode) return null
 
-        val pointers = composedData.mInputPointers
-        val segments = pointers.gestureSegments.toList().filter { it.x.length > 0 }
-
-        val count = segments.size
-        //Log.d("BatchInputSwipeDecoderDictionary", "total count is $count out of ${pointers.gestureSegments.size}")
-        if(count == 0) return null
-
         val kb = prevKeyboard ?: run {
             Log.e("SwipeDecoderDictionary", "Could not determine keyboard!")
             return null
         }
+
+        val pointers = composedData.mInputPointers
+        val rawSegments = pointers.gestureSegments.toList().filter { it.x.length > 0 }
+
+        // VNI tone keys: their points are not fed to the letters-only model; the digits crossed
+        // are used afterwards to re-rank candidates.
+        val toneKeys = kb.sortedKeys.filter { VniSwipe.isToneCode(it.swipeCode) }
+        val (segments, crossedTones) =
+            if(toneKeys.isEmpty()) rawSegments to emptySet<Int>()
+            else stripTonePoints(rawSegments, toneKeys)
+
+        // VNI: letters the gesture surely typed (start, end, rests, sharp turns). Candidates must
+        // hold them, so keys merely swept over cannot push out what was clearly swiped.
+        val anchors = if(toneKeys.isEmpty() || rawSegments.size != 1) emptyList() else {
+            val boxes = kb.sortedKeys.map {
+                VniSwipe.KeyBox(
+                    if(Character.isLetter(it.code)) it.code.toChar() else null,
+                    it.hitBox.left, it.hitBox.top, it.hitBox.right, it.hitBox.bottom
+                )
+            }
+            val seg = rawSegments.first()
+            VniSwipe.anchors(
+                seg.x.primitiveArray, seg.y.primitiveArray, seg.t.primitiveArray, seg.x.length,
+                boxes, toneKeys.first().width.toFloat()
+            )
+        }
+
+        if(toneKeys.isNotEmpty() && useHighBeam && (BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil)) {
+            logVniGesture(kb, rawSegments)
+        }
+
+        val count = segments.size
+        //Log.d("BatchInputSwipeDecoderDictionary", "total count is $count out of ${pointers.gestureSegments.size}")
+        if(count == 0) return null
 
         val keyboardWidth = kb.mBaseWidth
         val keyboardHeight = kb.mBaseHeight - kb.mPadding.bottom
@@ -457,7 +545,8 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
             else -> BeamValues.highBeam
         }
 
-        val topK = if(useHighBeam) 4 else 1
+        // More candidates for VNI tones: their base letters are re-spelled with the picked tones
+        val topK = if(!useHighBeam) 1 else if(toneKeys.isNotEmpty()) 16 else 4
 
         val results = synchronized(BinaryDictionary.sTrieUsageLock) {
             if(appliedTries?.isEmpty() != false) {
@@ -509,10 +598,47 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
             Log.d("SwipeDecoderDictionary", "outputs = ${results.joinToString { "Word(\"${it.word}\", score=${it.score}, lm=${it.lmScore}, ctc=${it.ctcScore})" }}")
         }
 
-        val list = ArrayList<SuggestedWords.SuggestedWordInfo>(results.size)
-        results.forEach {
+        // VNI: the model often has the right letters with the wrong marks, so each candidate's base
+        // letters also get spelled with exactly the picked tones (men -> mến, thiết -> thiệt) when
+        // the dictionary knows that spelling (with no tone picked: unmarked, tâm -> tam). Then
+        // re-rank by the picked tones. The best scores are handed out in the new order so the
+        // reorder survives any later sort by score.
+        val candidates = results.map { VniCandidate(it.word, it.score.toFloat(), it.ctcScore.toFloat()) }
+        val variants = if(toneKeys.isEmpty()) emptyList() else candidates
+            .distinctBy { VniSwipe.baseLetters(it.word) }
+            .flatMap { c ->
+                VniSwipe.markedVariants(c.word, crossedTones)
+                    .filter(isValidWord)
+                    .map { VniCandidate(it, c.score, c.pathScore) }
+            }
+        // No candidate ends on the letter the swipe surely ended on (than, thân for a swipe ending
+        // on t): also try their base letters ending there (that -> thật), with the picked tones
+        val endAnchor = anchors.lastOrNull()?.takeIf { it.isEnd }
+        val offered = candidates + variants
+        val endFixed = if(endAnchor == null || offered.any { VniSwipe.fitsAnchors(it.word, anchors) }) emptyList()
+            else offered.distinctBy { VniSwipe.baseLetters(it.word) }.flatMap { c ->
+                VniSwipe.endFixes(c.word, endAnchor.letters)
+                    .flatMap { VniSwipe.markedVariants(it, crossedTones) }
+                    .filter(isValidWord)
+                    .map { VniCandidate(it, c.score, c.pathScore) }
+            }
+        // Drop the candidates missing a letter that was surely typed, unless none has them all
+        val all = (offered + endFixed).distinctBy { it.word }
+            .let { list -> list.filter { VniSwipe.fitsAnchors(it.word, anchors) }.ifEmpty { list } }
+        val ranked = if(toneKeys.isEmpty()) all else VniSwipe.rerank(all, crossedTones, { it.pathScore }) { it.word }
+        val scores = all.map { it.score }.sortedDescending()
+
+        if(toneKeys.isNotEmpty() && (BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil)) {
+            Log.d("SwipeDecoderDictionary", "VNI toneKeys=${toneKeys.size} crossedTones=${crossedTones.sorted()} " +
+                    "anchors=${anchors.joinToString("") { a -> a.letters.sorted().joinToString("", "[", "]") }} " +
+                    "model=${results.joinToString { it.word }} added=${(variants + endFixed).joinToString { it.word }} " +
+                    "ranked=${ranked.joinToString { it.word }}")
+        }
+
+        val list = ArrayList<SuggestedWords.SuggestedWordInfo>(ranked.size)
+        ranked.forEachIndexed { index, it ->
             list.add(SuggestedWords.SuggestedWordInfo(
-                it.word, "", (it.score * 1000.0f + 10000.0f).toInt(), SuggestedWords.SuggestedWordInfo.KIND_CORRECTION, this, 0, 0
+                it.word, "", (scores[index] * 1000.0f + 10000.0f).toInt(), SuggestedWords.SuggestedWordInfo.KIND_CORRECTION, this, 0, 0
             ).apply {
                 mOriginatesFromSwipeModel = true
             })

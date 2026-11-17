@@ -1,6 +1,34 @@
 package org.futo.inputmethod.event.combiners.vietnamese
 
+import java.text.Normalizer
+
 object VNI {
+    private val MARK_KEYS = mapOf(
+        '\u0301' to '1', // acute
+        '\u0300' to '2', // grave
+        '\u0309' to '3', // hook above
+        '\u0303' to '4', // tilde
+        '\u0323' to '5', // dot below
+        '\u0302' to '6', // circumflex
+        '\u031B' to '7', // horn
+        '\u0306' to '8', // breve
+    )
+
+    /**
+     * The VNI keys that type [ch]: "á" -> "a1", "ờ" -> "o72", "Đ" -> "D9", "b" -> "b". Null when
+     * [ch] is not a Latin letter VNI can type. Lets a word that arrives already marked (a swiped
+     * word) go into the VNI buffer, so tone keys pressed after it still apply.
+     */
+    fun keysFor(ch: Char): String? {
+        if (ch == 'đ') return "d9"
+        if (ch == 'Đ') return "D9"
+        val nfd = Normalizer.normalize(ch.toString(), Normalizer.Form.NFD)
+        val base = nfd[0]
+        if (base !in 'a'..'z' && base !in 'A'..'Z') return null
+        val marks = nfd.drop(1).map { MARK_KEYS[it] ?: return null }
+        return base + marks.joinToString("")
+    }
+
     val TONES = mapOf(
         '1' to ToneMark.ACUTE,
         '2' to ToneMark.GRAVE,

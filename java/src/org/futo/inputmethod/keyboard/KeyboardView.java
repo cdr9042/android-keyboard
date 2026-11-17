@@ -23,6 +23,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Paint.Align;
+import android.graphics.Path;
 import android.graphics.PorterDuff;
 import android.graphics.Rect;
 import android.graphics.RectF;
@@ -184,6 +185,52 @@ public class KeyboardView extends View {
     @Nullable
     public KeyVisualAttributes getKeyVisualAttribute() {
         return mKeyVisualAttributes;
+    }
+
+    private static final float STROKE_MARK_BASE_ALPHA = 0.35f;
+
+    /**
+     * "d" + U+0335 marks a key that adds the stroke to d (VNI tone row), not one that types "đ".
+     * Draw the d faded, like the dotted circle on the other tone keys, and only the stroke at
+     * full strength. Returns false for any other text so the caller draws it normally.
+     */
+    private static boolean drawStrokeMark(@Nonnull final Canvas canvas, @Nonnull final String text,
+            final float x, final float y, @Nonnull final Paint paint) {
+        if (text.length() != 2 || text.charAt(1) != '\u0335') return false;
+        final String base = text.substring(0, 1);
+        final String stroked;
+        if (base.equals("d")) stroked = "\u0111";
+        else if (base.equals("D")) stroked = "\u0110";
+        else return false;
+
+        // Lay both glyphs out from the same left edge so the stroke lines up with the d.
+        final Align align = paint.getTextAlign();
+        final float width = paint.measureText(stroked);
+        final float left = align == Align.CENTER ? x - width / 2.0f
+                : align == Align.RIGHT ? x - width : x;
+        paint.setTextAlign(Align.LEFT);
+
+        final int alpha = paint.getAlpha();
+        paint.setAlpha(Math.round(alpha * STROKE_MARK_BASE_ALPHA));
+        canvas.drawText(base, left, y, paint);
+        paint.setAlpha(alpha);
+
+        final Path strokePath = new Path();
+        final Path basePath = new Path();
+        paint.getTextPath(stroked, 0, 1, left, y, strokePath);
+        paint.getTextPath(base, 0, 1, left, y, basePath);
+        // đ minus d leaves the stroke without the piece that crosses the stem, so use it only to
+        // find the stroke's box, then draw the whole đ clipped to that box: a solid, unbroken bar.
+        strokePath.op(basePath, Path.Op.DIFFERENCE);
+        final RectF strokeBounds = new RectF();
+        strokePath.computeBounds(strokeBounds, true);
+        canvas.save();
+        canvas.clipRect(strokeBounds);
+        canvas.drawText(stroked, left, y, paint);
+        canvas.restore();
+
+        paint.setTextAlign(align);
+        return true;
     }
 
     private static void blendAlpha(@Nonnull final Paint paint, final int alpha) {
@@ -523,7 +570,9 @@ public class KeyboardView extends View {
 
             if(outline == null) blendAlpha(paint, params.mAnimAlpha);
 
-            canvas.drawText(label, 0, label.length(), labelX, labelBaseline, paint);
+            if (!drawStrokeMark(canvas, label, labelX, labelBaseline, paint)) {
+                canvas.drawText(label, 0, label.length(), labelX, labelBaseline, paint);
+            }
 
             // Turn off drop shadow and reset x-scale.
             paint.clearShadowLayer();
@@ -573,8 +622,10 @@ public class KeyboardView extends View {
                 paint.setTextAlign(Align.CENTER);
             }
             final float adjustmentY = params.mHintLabelVerticalAdjustment * labelCharHeight;
-            canvas.drawText(
-                    hintLabel, 0, hintLabel.length(), hintX, hintBaseline + adjustmentY, paint);
+            if (!drawStrokeMark(canvas, hintLabel, hintX, hintBaseline + adjustmentY, paint)) {
+                canvas.drawText(
+                        hintLabel, 0, hintLabel.length(), hintX, hintBaseline + adjustmentY, paint);
+            }
         } else if(hintIcon != null) {
             final float size = kdc.getHintSize();
 

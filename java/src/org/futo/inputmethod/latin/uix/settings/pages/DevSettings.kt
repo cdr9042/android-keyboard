@@ -43,6 +43,7 @@ import org.futo.inputmethod.engine.general.UseExpandableSuggestionsForGeneralIME
 import org.futo.inputmethod.latin.BuildConfig
 import org.futo.inputmethod.latin.CrashLoggingApplication
 import org.futo.inputmethod.latin.R
+import org.futo.inputmethod.latin.KeepSwipeTrailSetting
 import org.futo.inputmethod.latin.SwipeDecoderDictionary
 import org.futo.inputmethod.latin.SwipeLanguageModelSetting
 import org.futo.inputmethod.latin.SwipeSpecialDecoderSetting
@@ -318,6 +319,11 @@ fun DeveloperScreen(navController: NavHostController = rememberNavController()) 
             title = "Language model",
             subtitle = "default = yes",
             setting = SwipeLanguageModelSetting
+        )
+        SettingToggleDataStore(
+            title = "Keep swipe trail on screen",
+            subtitle = "The trail stays until the next swipe, for screenshots",
+            setting = KeepSwipeTrailSetting
         )
         NavigationItem(
             title = "Activate swipe debug logging for 5 minutes",
