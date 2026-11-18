@@ -324,6 +324,29 @@ class VniSwipeTest {
     }
 
     @Test
+    fun anchorSpellingsSpellEachSureLetterOnce() {
+        val a = VniSwipe.Anchor(setOf('d', 's'), isStart = true)
+        val b = VniSwipe.Anchor(setOf('e'))
+        val c = VniSwipe.Anchor(setOf('t'), isEnd = true)
+        assertEquals(listOf("det", "set"), VniSwipe.anchorSpellings(listOf(a, b, c)))
+        assertEquals(listOf<String>(), VniSwipe.anchorSpellings(emptyList()))
+    }
+
+    @Test
+    fun theDetSwipeFindsDetWhenTheModelOnlyOffersDiet() {
+        // The path up to the tone row swept over i and o, so the model offered diệt/đoạt;
+        // the sure letters were [ds][e][t] and 9, 6 and the dot below were crossed
+        val anchors = listOf(
+            VniSwipe.Anchor(setOf('d', 's'), isStart = true),
+            VniSwipe.Anchor(setOf('e')),
+            VniSwipe.Anchor(setOf('t'), isEnd = true)
+        )
+        val found = VniSwipe.anchorSpellings(anchors).flatMap { VniSwipe.markedVariants(it, setOf(5, 6, 9)) }
+        assertTrue("đệt" in found)
+        assertEquals("đệt", VniSwipe.rerank(listOf("diệt", "đệt"), setOf(5, 6, 9)) { it }.first())
+    }
+
+    @Test
     fun rerankPutsUnmarkedWordsFirstWhenNoToneWasCrossed() {
         assertEquals(
             listOf("tam", "nay", "tâm", "này"),

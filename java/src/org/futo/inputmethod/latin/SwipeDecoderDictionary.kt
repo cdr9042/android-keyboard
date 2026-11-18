@@ -622,8 +622,15 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
                     .filter(isValidWord)
                     .map { VniCandidate(it, c.score, c.pathScore) }
             }
+        // The sure letters alone, with the picked tones (đệt when the model only saw diệt, đoạt)
+        val worst = candidates.minByOrNull { it.pathScore }
+        val fromAnchors = if(crossedTones.isEmpty() || worst == null) emptyList()
+            else VniSwipe.anchorSpellings(anchors)
+                .flatMap { VniSwipe.markedVariants(it, crossedTones) }
+                .filter(isValidWord)
+                .map { VniCandidate(it, worst.score, worst.pathScore) }
         // Drop the candidates missing a letter that was surely typed, unless none has them all
-        val all = (offered + endFixed).distinctBy { it.word }
+        val all = (offered + endFixed + fromAnchors).distinctBy { it.word }
             .let { list -> list.filter { VniSwipe.fitsAnchors(it.word, anchors) }.ifEmpty { list } }
         val ranked = if(toneKeys.isEmpty()) all else VniSwipe.rerank(all, crossedTones, { it.pathScore }) { it.word }
         val scores = all.map { it.score }.sortedDescending()
@@ -631,7 +638,7 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         if(toneKeys.isNotEmpty() && (BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil)) {
             Log.d("SwipeDecoderDictionary", "VNI toneKeys=${toneKeys.size} crossedTones=${crossedTones.sorted()} " +
                     "anchors=${anchors.joinToString("") { a -> a.letters.sorted().joinToString("", "[", "]") }} " +
-                    "model=${results.joinToString { it.word }} added=${(variants + endFixed).joinToString { it.word }} " +
+                    "model=${results.joinToString { it.word }} added=${(variants + endFixed + fromAnchors).joinToString { it.word }} " +
                     "ranked=${ranked.joinToString { it.word }}")
         }
 
