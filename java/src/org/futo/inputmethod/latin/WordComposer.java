@@ -186,7 +186,23 @@ public final class WordComposer {
         refreshTypedWordCache();
         mCursorPositionWithinWord = mCodePointSize; // TODO: This wasn't originally here, why not?
         mEvents.add(event);
+        // A combiner (VNI, Telex...) consumes taps and backspaces itself, so they never reach
+        // applyProcessedEvent.
+        if (processedEvent.isConsumed()) leaveBatchModeForTypedEdit();
         return processedEvent;
+    }
+
+    // The user is editing a swiped word by tapping or deleting: from now on it is a typed word,
+    // so stop re-decoding the old gesture for it.
+    private void leaveBatchModeForTypedEdit() {
+        if (!mIsBatchMode || mIsSettingBatchInputWord) return;
+        mIsBatchMode = false;
+        mInputPointers.reset();
+        final int length = Math.min(size(), MAX_WORD_LENGTH);
+        for (int i = 0; i < length; i++) {
+            mInputPointers.addPointerAt(i,
+                    Constants.NOT_A_COORDINATE, Constants.NOT_A_COORDINATE, 0, 0);
+        }
     }
 
     /**
@@ -198,17 +214,7 @@ public final class WordComposer {
      * @param event the event to apply. Must not be null.
      */
     public void applyProcessedEvent(final Event event) {
-        if (mIsBatchMode && !mIsSettingBatchInputWord) {
-            // The user is editing a swiped word by tapping or deleting: from now on it is a
-            // typed word, so stop re-decoding the old gesture for it.
-            mIsBatchMode = false;
-            mInputPointers.reset();
-            final int length = Math.min(size(), MAX_WORD_LENGTH);
-            for (int i = 0; i < length; i++) {
-                mInputPointers.addPointerAt(i,
-                        Constants.NOT_A_COORDINATE, Constants.NOT_A_COORDINATE, 0, 0);
-            }
-        }
+        leaveBatchModeForTypedEdit();
         mCombinerChain.applyProcessedEvent(event);
         final int primaryCode = event.mCodePoint;
         final int keyX = event.mX;
