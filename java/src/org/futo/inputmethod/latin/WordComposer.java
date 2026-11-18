@@ -63,6 +63,8 @@ public final class WordComposer {
     private SuggestedWordInfo mAutoCorrection;
     private boolean mIsResumed;
     private boolean mIsBatchMode;
+    // True while setBatchInputWord feeds the swiped word in, so those events keep batch mode.
+    private boolean mIsSettingBatchInputWord;
     private boolean mIsAttachedToNonWord;
     // A memory of the last rejected batch mode suggestion, if any. This goes like this: the user
     // gestures a word, is displeased with the results and hits backspace, then gestures again.
@@ -196,6 +198,17 @@ public final class WordComposer {
      * @param event the event to apply. Must not be null.
      */
     public void applyProcessedEvent(final Event event) {
+        if (mIsBatchMode && !mIsSettingBatchInputWord) {
+            // The user is editing a swiped word by tapping or deleting: from now on it is a
+            // typed word, so stop re-decoding the old gesture for it.
+            mIsBatchMode = false;
+            mInputPointers.reset();
+            final int length = Math.min(size(), MAX_WORD_LENGTH);
+            for (int i = 0; i < length; i++) {
+                mInputPointers.addPointerAt(i,
+                        Constants.NOT_A_COORDINATE, Constants.NOT_A_COORDINATE, 0, 0);
+            }
+        }
         mCombinerChain.applyProcessedEvent(event);
         final int primaryCode = event.mCodePoint;
         final int keyX = event.mX;
@@ -299,6 +312,7 @@ public final class WordComposer {
     public void setBatchInputWord(final String word) {
         reset(true);
         mIsBatchMode = true;
+        mIsSettingBatchInputWord = true;
         final int length = word.length();
         for (int i = 0; i < length; i = Character.offsetByCodePoints(word, i, 1)) {
             final int codePoint = Character.codePointAt(word, i);
@@ -308,6 +322,7 @@ public final class WordComposer {
                     processEvent(Event.createEventForCodePointFromUnknownSource(codePoint));
             applyProcessedEvent(processedEvent);
         }
+        mIsSettingBatchInputWord = false;
     }
 
     /**
