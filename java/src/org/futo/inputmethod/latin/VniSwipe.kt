@@ -373,5 +373,16 @@ internal object VniSwipe {
         return last.flatMap { c -> listOf(base.dropLast(1) + c, base + c) }.distinct().filter { it != base }
     }
 
+    /**
+     * Words spelled with only the letters the swipe surely typed, one per anchor:
+     * [ds][e][t] -> det, set. A swipe up to the tone row sweeps over letters of the top row, so
+     * the model may offer none of these (diet, doat for det).
+     */
+    fun anchorSpellings(anchors: List<Anchor>): List<String> =
+        if (anchors.isEmpty()) emptyList()
+        else anchors.fold(listOf("")) { acc, a ->
+            acc.flatMap { p -> a.letters.sorted().map { p + it } }.take(MAX_VARIANTS)
+        }
+
     private const val MAX_VARIANTS = 64
 }
