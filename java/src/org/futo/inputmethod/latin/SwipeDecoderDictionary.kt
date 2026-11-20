@@ -289,18 +289,22 @@ private fun stripTonePoints(
         val split = VniSwipe.splitTones(xs, ys, ts, VniSwipe.toneDigitsAt(xs, ys, n, toneAt), keyWidth)
         crossed.addAll(split.picked)
 
-        InputPointers.GestureSegment(seg.pointerId).also { kept ->
-            for (i in 0 until n) {
-                if (!split.keep[i]) continue
-                kept.x.add(xs[i])
-                kept.y.add(ys[i])
-                kept.t.add(ts[i])
-            }
-        }
+        keepPoints(seg, split.keep)
     }.filter { it.x.length > 0 }
 
     return stripped to crossed
 }
+
+/** The points of [seg] marked in [keep]. */
+private fun keepPoints(seg: InputPointers.GestureSegment, keep: BooleanArray) =
+    InputPointers.GestureSegment(seg.pointerId).also { kept ->
+        for (i in 0 until seg.x.length) {
+            if (!keep[i]) continue
+            kept.x.add(seg.x.get(i))
+            kept.y.add(seg.y.get(i))
+            kept.t.add(seg.t.get(i))
+        }
+    }
 
 class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Dictionary("swipe", locale) {
     companion object {
@@ -360,6 +364,9 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
             return modelFile.absolutePath
         }
 
+
+        /** Whether the current layout types Vietnamese marks with Telex (see [TelexSwipe]). */
+        var telexLayout = false
 
         @JvmStatic
         fun updateKeyboard(keyboard: Keyboard) {
@@ -473,27 +480,44 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         // VNI tone keys: their points are not fed to the letters-only model; the digits crossed
         // are used afterwards to re-rank candidates.
         val toneKeys = kb.sortedKeys.filter { VniSwipe.isToneCode(it.swipeCode) }
-        val (segments, crossedTones) =
-            if(toneKeys.isEmpty()) rawSegments to emptySet<Int>()
-            else stripTonePoints(rawSegments, toneKeys)
-
-        // VNI: letters the gesture surely typed (start, end, rests, sharp turns). Candidates must
-        // hold them, so keys merely swept over cannot push out what was clearly swiped.
-        val anchors = if(toneKeys.isEmpty() || rawSegments.size != 1) emptyList() else {
-            val boxes = kb.sortedKeys.map {
+        // Telex: the marks are letters (s f r x j w) and loops (aa ee oo dd), read from one-finger swipes
+        val telex = toneKeys.isEmpty() && telexLayout && rawSegments.size == 1
+        // Vietnamese marks re-rank the candidates
+        val marked = toneKeys.isNotEmpty() || telex
+        val keyWidth = toneKeys.firstOrNull()?.width?.toFloat() ?: kb.mMostCommonKeyWidth.toFloat()
+        val boxes by lazy {
+            kb.sortedKeys.map {
                 VniSwipe.KeyBox(
                     if(Character.isLetter(it.code)) it.code.toChar() else null,
                     it.hitBox.left, it.hitBox.top, it.hitBox.right, it.hitBox.bottom
                 )
             }
-            val seg = rawSegments.first()
-            VniSwipe.anchors(
-                seg.x.primitiveArray, seg.y.primitiveArray, seg.t.primitiveArray, seg.x.length,
-                boxes, toneKeys.first().width.toFloat()
+        }
+        val telexSplit = if(!telex) null else rawSegments.first().let { seg ->
+            TelexSwipe.split(
+                seg.x.primitiveArray, seg.y.primitiveArray, seg.t.primitiveArray, seg.x.length, boxes, keyWidth
             )
         }
+        val (segments, crossedTones) = when {
+            telexSplit != null ->
+                listOf(keepPoints(rawSegments.first(), telexSplit.keep)).filter { it.x.length > 0 } to telexSplit.picked
+            toneKeys.isEmpty() -> rawSegments to emptySet<Int>()
+            else -> stripTonePoints(rawSegments, toneKeys)
+        }
 
-        if(toneKeys.isNotEmpty() && useHighBeam && (BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil)) {
+        // Letters the gesture surely typed (start, end, rests, sharp turns). Candidates must
+        // hold them, so keys merely swept over cannot push out what was clearly swiped.
+        val anchors = when {
+            telexSplit != null -> telexSplit.anchors
+            toneKeys.isEmpty() || rawSegments.size != 1 -> emptyList()
+            else -> rawSegments.first().let { seg ->
+                VniSwipe.anchors(
+                    seg.x.primitiveArray, seg.y.primitiveArray, seg.t.primitiveArray, seg.x.length, boxes, keyWidth
+                )
+            }
+        }
+
+        if(marked && useHighBeam && (BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil)) {
             logVniGesture(kb, rawSegments)
         }
 
@@ -545,8 +569,8 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
             else -> BeamValues.highBeam
         }
 
-        // More candidates for VNI tones: their base letters are re-spelled with the picked tones
-        val topK = if(!useHighBeam) 1 else if(toneKeys.isNotEmpty()) 16 else 4
+        // More candidates for Vietnamese marks: their base letters are re-spelled with the picked tones
+        val topK = if(!useHighBeam) 1 else if(marked) 16 else 4
 
         val results = synchronized(BinaryDictionary.sTrieUsageLock) {
             if(appliedTries?.isEmpty() != false) {
@@ -604,7 +628,7 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         // re-rank by the picked tones. The best scores are handed out in the new order so the
         // reorder survives any later sort by score.
         val candidates = results.map { VniCandidate(it.word, it.score.toFloat(), it.ctcScore.toFloat()) }
-        val variants = if(toneKeys.isEmpty()) emptyList() else candidates
+        val variants = if(!marked) emptyList() else candidates
             .distinctBy { VniSwipe.baseLetters(it.word) }
             .flatMap { c ->
                 VniSwipe.markedVariants(c.word, crossedTones)
@@ -632,11 +656,11 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         // Drop the candidates missing a letter that was surely typed, unless none has them all
         val all = (offered + endFixed + fromAnchors).distinctBy { it.word }
             .let { list -> list.filter { VniSwipe.fitsAnchors(it.word, anchors) }.ifEmpty { list } }
-        val ranked = if(toneKeys.isEmpty()) all else VniSwipe.rerank(all, crossedTones, { it.pathScore }) { it.word }
+        val ranked = if(!marked) all else VniSwipe.rerank(all, crossedTones, { it.pathScore }) { it.word }
         val scores = all.map { it.score }.sortedDescending()
 
-        if(toneKeys.isNotEmpty() && (BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil)) {
-            Log.d("SwipeDecoderDictionary", "VNI toneKeys=${toneKeys.size} crossedTones=${crossedTones.sorted()} " +
+        if(marked && (BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil)) {
+            Log.d("SwipeDecoderDictionary", "VNI toneKeys=${toneKeys.size} telex=$telex crossedTones=${crossedTones.sorted()} " +
                     "anchors=${anchors.joinToString("") { a -> a.letters.sorted().joinToString("", "[", "]") }} " +
                     "model=${results.joinToString { it.word }} added=${(variants + endFixed + fromAnchors).joinToString { it.word }} " +
                     "ranked=${ranked.joinToString { it.word }}")

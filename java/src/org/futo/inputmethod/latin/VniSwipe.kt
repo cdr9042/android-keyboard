@@ -183,18 +183,7 @@ internal object VniSwipe {
      */
     fun anchors(xs: IntArray, ys: IntArray, ts: IntArray, n: Int, keys: List<KeyBox>, keyWidth: Float): List<Anchor> {
         if (n == 0) return emptyList()
-        val events = sortedSetOf(0, n - 1)
-
-        val rest = restingPoints(xs, ys, ts, n, keyWidth * SLOW_KEY_WIDTHS_PER_MS)
-        var first = 0
-        while (first < n) {
-            if (!rest[first]) { first++; continue }
-            var last = first
-            while (last + 1 < n && rest[last + 1]) last++
-            events.add((first + last) / 2)
-            first = last + 1
-        }
-        events.addAll(turnPoints(xs, ys, n, keyWidth / 3f))
+        val events = meantPoints(xs, ys, ts, n, keyWidth)
 
         val out = mutableListOf<Anchor>()
         var canMerge = false
@@ -216,10 +205,33 @@ internal object VniSwipe {
     }
 
     /**
+     * The points where the gesture starts, ends, rests ([REST_MS], the middle one) or turns sharply.
+     * With [separateCorners], sharp turns close together count as one each (see [turnPoints]).
+     */
+    fun meantPoints(
+        xs: IntArray, ys: IntArray, ts: IntArray, n: Int, keyWidth: Float, separateCorners: Boolean = false
+    ): java.util.SortedSet<Int> {
+        val events = sortedSetOf(0, n - 1)
+        val rest = restingPoints(xs, ys, ts, n, keyWidth * SLOW_KEY_WIDTHS_PER_MS)
+        var first = 0
+        while (first < n) {
+            if (!rest[first]) { first++; continue }
+            var last = first
+            while (last + 1 < n && rest[last + 1]) last++
+            events.add((first + last) / 2)
+            first = last + 1
+        }
+        events.addAll(turnPoints(xs, ys, n, keyWidth / 3f, separateCorners))
+        return events
+    }
+
+    /**
      * Points where the path turns by at least [MIN_TURN_DEGREES], one per turn (the sharpest).
      * The path is first thinned to points at least [minStep] apart so jitter is not read as a turn.
+     * Two corners less than a key apart read as one turn; with [separateCorners] each sharpest
+     * point at least two steps from a sharper one counts.
      */
-    private fun turnPoints(xs: IntArray, ys: IntArray, n: Int, minStep: Float): List<Int> {
+    private fun turnPoints(xs: IntArray, ys: IntArray, n: Int, minStep: Float, separateCorners: Boolean = false): List<Int> {
         val kept = mutableListOf(0)
         for (i in 1 until n) {
             val last = kept.last()
@@ -236,7 +248,15 @@ internal object VniSwipe {
             if (angle[j] < MIN_TURN_DEGREES) { j++; continue }
             var end = j
             while (end + 1 < kept.size && angle[end + 1] >= MIN_TURN_DEGREES) end++
-            out.add(kept[(j..end).maxByOrNull { angle[it] }!!])
+            if (!separateCorners) {
+                out.add(kept[(j..end).maxByOrNull { angle[it] }!!])
+            } else {
+                val corners = mutableListOf<Int>()
+                for (i in (j..end).sortedByDescending { angle[it] }) {
+                    if (corners.all { kotlin.math.abs(it - i) >= 2 }) corners.add(i)
+                }
+                corners.sorted().forEach { out.add(kept[it]) }
+            }
             j = end + 1
         }
         return out
