@@ -211,18 +211,48 @@ public class KeyboardView extends View {
         paint.setTextAlign(Align.LEFT);
 
         final int alpha = paint.getAlpha();
-        paint.setAlpha(Math.round(alpha * STROKE_MARK_BASE_ALPHA));
-        canvas.drawText(base, left, y, paint);
-        paint.setAlpha(alpha);
-
         final Path strokePath = new Path();
         final Path basePath = new Path();
         paint.getTextPath(stroked, 0, 1, left, y, strokePath);
         paint.getTextPath(base, 0, 1, left, y, basePath);
+        final RectF strokeBounds = new RectF();
+
+        final RectF glyphBounds = new RectF();
+        final RectF baseBounds = new RectF();
+        strokePath.computeBounds(glyphBounds, true);
+        basePath.computeBounds(baseBounds, true);
+        // The bar of Đ sticks out to the left of the D, so the Đ glyph is wider and its body sits
+        // to the right of a plain D. Fade the whole Đ (so the body lines up) and keep only the bar
+        // at full strength: the part of Đ left of its body gives the bar's height, and the bar
+        // runs from the glyph's left edge to just past the stem.
+        final float overhang = glyphBounds.width() - baseBounds.width();
+        if (base.equals("D") && overhang > 0.0f) {
+            paint.setAlpha(Math.round(alpha * STROKE_MARK_BASE_ALPHA));
+            canvas.drawText(stroked, left, y, paint);
+            paint.setAlpha(alpha);
+
+            final Path overhangPath = new Path();
+            overhangPath.addRect(glyphBounds.left, glyphBounds.top,
+                    glyphBounds.left + overhang * 0.8f, glyphBounds.bottom, Path.Direction.CW);
+            overhangPath.op(strokePath, Path.Op.INTERSECT);
+            overhangPath.computeBounds(strokeBounds, true);
+            strokeBounds.left = glyphBounds.left;
+            strokeBounds.right = glyphBounds.left + overhang + paint.getTextSize() * 0.12f;
+            canvas.save();
+            canvas.clipRect(strokeBounds);
+            canvas.drawText(stroked, left, y, paint);
+            canvas.restore();
+            paint.setTextAlign(align);
+            return true;
+        }
+
+        paint.setAlpha(Math.round(alpha * STROKE_MARK_BASE_ALPHA));
+        canvas.drawText(base, left, y, paint);
+        paint.setAlpha(alpha);
+
         // đ minus d leaves the stroke without the piece that crosses the stem, so use it only to
         // find the stroke's box, then draw the whole đ clipped to that box: a solid, unbroken bar.
         strokePath.op(basePath, Path.Op.DIFFERENCE);
-        final RectF strokeBounds = new RectF();
         strokePath.computeBounds(strokeBounds, true);
         canvas.save();
         canvas.clipRect(strokeBounds);
